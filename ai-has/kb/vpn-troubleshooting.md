@@ -1,5 +1,8 @@
 # VPN Troubleshooting
 
+## Common problems
+VPN is not working. VPN won't connect. Cannot connect to the company network from home. VPN keeps disconnecting. VPN error. Remote access is not working.
+
 ## Common fixes
 1. Check internet connection first (open any website).
 2. Restart the VPN client and reconnect.

@@ -1,5 +1,8 @@
 # Password Reset (Company Account)
 
+## Common problems
+Forgot my password. Cannot log in. Account is locked. Password expired. Wrong password too many times. I need to reset my password.
+
 ## When to use
 Employee forgot their password or the account is locked after failed attempts.
 
