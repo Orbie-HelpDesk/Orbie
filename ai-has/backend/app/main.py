@@ -13,15 +13,25 @@ from .tickets import create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
 
+# Browsers must revalidate pages and scripts, so a rebuilt frontend is never hidden by an old cached copy
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+class NoCacheStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
 FRONTEND_DIR = Path("/frontend")
 CHAT_DIR = FRONTEND_DIR / "chat"
 ADMIN_DIR = FRONTEND_DIR / "admin"
 
 # Chat page files: /static/styles.css, /static/app.js, /static/field.js
-app.mount("/static", StaticFiles(directory=CHAT_DIR, check_dir=False), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=CHAT_DIR, check_dir=False), name="static")
 
 # Admin page files: /admin-assets/admin.css, /admin-assets/admin.js
-app.mount("/admin-assets", StaticFiles(directory=ADMIN_DIR, check_dir=False), name="admin-assets")
+app.mount("/admin-assets", NoCacheStaticFiles(directory=ADMIN_DIR, check_dir=False), name="admin-assets")
 
 
 class ChatRequest(BaseModel):
@@ -39,12 +49,12 @@ class StatusUpdate(BaseModel):
 
 @app.get("/")
 def home():
-    return FileResponse(CHAT_DIR / "index.html")
+    return FileResponse(CHAT_DIR / "index.html", headers=NO_CACHE)
 
 
 @app.get("/admin")
 def admin():
-    return FileResponse(ADMIN_DIR / "admin.html")
+    return FileResponse(ADMIN_DIR / "admin.html", headers=NO_CACHE)
 
 
 @app.get("/stats")
