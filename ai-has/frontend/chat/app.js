@@ -257,7 +257,8 @@ function buildTicketButton(record) {
     btn.disabled = true;
     btn.textContent = "Creating ticket...";
     const q = record.question || "";
-    const summary = q.length >= 3 ? q : `Help request: ${q}`;
+    // The API accepts 3 to 500 characters
+    const summary = (q.length >= 3 ? q : `Help request: ${q}`).slice(0, 500);
     try {
       const res = await fetch("/tickets", {
         method: "POST",
