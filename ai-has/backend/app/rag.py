@@ -86,9 +86,33 @@ def article_chunks(source: str) -> list[dict]:
     return [{"content": r["content"], "metadata": {"source": source}} for r in rows]
 
 
-def answer(question: str) -> dict:
+def select_chunks(chunks: list[dict]) -> list[dict]:
+    """The chunks that go to the AI: the whole best-matching article, plus any article just as close."""
+    best_chunk = min(chunks, key=lambda c: c["distance"])
+    best = best_chunk["distance"]
+    best_source = best_chunk["metadata"].get("source")
+
+    article = article_chunks(best_source) if best_source else []
+    if not article:
+        article = [best_chunk]
+    others = [
+        c for c in chunks
+        if c["metadata"].get("source") != best_source and c["distance"] <= best + 0.05
+    ]
+    return article + others
+
+
+def build_context(chunks: list[dict]) -> str:
+    return "\n\n---\n\n".join(
+        f"[Source: {c['metadata'].get('source')}]\n{c['content']}" for c in chunks
+    )
+
+
+def answer(question: str, chunks: list[dict] | None = None) -> dict:
+    """Pass chunks you already retrieved to skip a second search (used by the evaluation)."""
     t0 = time.time()
-    chunks = retrieve(question)
+    if chunks is None:
+        chunks = retrieve(question)
     print(f"[timing] search: {time.time() - t0:.1f}s", flush=True)
     distances = [round(c["distance"], 3) for c in chunks]
 
@@ -101,23 +125,8 @@ def answer(question: str) -> dict:
             "distances": distances,
         }
 
-    # Use the whole best-matching article, plus any other article that is just as close
-    best_chunk = min(chunks, key=lambda c: c["distance"])
-    best = best_chunk["distance"]
-    best_source = best_chunk["metadata"].get("source")
-
-    article = article_chunks(best_source) if best_source else []
-    if not article:
-        article = [best_chunk]
-    others = [
-        c for c in chunks
-        if c["metadata"].get("source") != best_source and c["distance"] <= best + 0.05
-    ]
-    chunks = article + others
-
-    context = "\n\n---\n\n".join(
-        f"[Source: {c['metadata'].get('source')}]\n{c['content']}" for c in chunks
-    )
+    chunks = select_chunks(chunks)
+    context = build_context(chunks)
     res = client.chat.completions.create(
         model=settings.chat_model,
         messages=[
