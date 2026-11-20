@@ -90,3 +90,34 @@ def test_query_string_host_override_is_checked(key):
     require_local_db(f"postgresql+psycopg2://u:pw@db:5432/x?{key}=localhost", argv=[])
     with pytest.raises(SystemExit):
         require_local_db(f"postgresql+psycopg2://u:pw@db:5432/x?{key}=db&{key}=evil.example.com", argv=[])
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql:///dbname",
+        "postgresql://u:secret-pw@/dbname",
+        "postgresql://u:secret-pw@:5432/dbname",
+        "postgresql+psycopg2://u:secret-pw@/x?host=localhost",
+    ],
+)
+def test_empty_or_missing_host_is_refused_without_echoing_url(url):
+    # libpq would fall back to PGHOST here, so the real target is unknown
+    with pytest.raises(SystemExit) as exc:
+        require_local_db(url, argv=[])
+    message = str(exc.value)
+    assert "empty host" in message
+    assert "PGHOST" in message
+    assert "postgresql" not in message
+    assert "://" not in message
+    assert "secret-pw" not in message
+    assert "dbname" not in message
+
+
+def test_blank_query_host_is_ignored_by_the_engine_so_url_host_decides():
+    # make_url drops blank query values, so the engine connects to the URL host (db)
+    require_local_db("postgresql+psycopg2://u:pw@db:5432/x?host=", argv=[])
+
+
+def test_allow_remote_flag_still_overrides_empty_host():
+    require_local_db("postgresql:///dbname", argv=["--allow-remote"])

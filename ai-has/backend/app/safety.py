@@ -39,7 +39,15 @@ def require_local_db(database_url: str, argv: list[str] | None = None) -> None:
     hosts = _hosts(database_url)
     if hosts and all(h in LOCAL_HOSTS for h in hosts):
         return
-    bad = next((h for h in hosts if h not in LOCAL_HOSTS), None)
+    if not all(hosts):
+        # An empty host makes libpq fall back to PGHOST or a local socket, so it is not checkable.
+        raise SystemExit(
+            "Refusing to write: DATABASE_URL has a missing or empty host, so the real target "
+            "would come from PGHOST or a default.\n"
+            "Set an explicit host (db or localhost), or pass "
+            f"{ALLOW_FLAG} if you really mean to write to a remote database."
+        )
+    bad = next(h for h in hosts if h not in LOCAL_HOSTS)
     # A badly written password can end up inside the parsed host, so only show plain hostnames.
     shown = bad if bad and SAFE_TO_SHOW.match(bad) else "(missing, invalid or not a plain hostname)"
     raise SystemExit(
