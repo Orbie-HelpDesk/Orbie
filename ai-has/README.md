@@ -89,12 +89,39 @@ Passing `--allow-remote` overrides the guard, for example `python -m app.init_db
 Tickets are owned by `employee@company.com`. If that user does not exist (for example on a database seeded by `init_db`), the first user with role `employee` is used and a warning is logged.
 
 ## Evaluation
-These scripts call the Gemini API, so they use your quota.
+Two question sets:
+- **Generated** (`eval_data/questions.json`): written by Gemini from the articles, so it is easy.
+- **Hard** (`eval_data/hard_questions.json`): 51 hand-written cases. Typos and slang, Taglish, one-word messages, two problems in one message, questions that need a different article, near-miss out-of-scope questions (HR, payroll, building access), prompt injections, PII, and harmless messages that must not be blocked. It was written before any results were seen and is not tuned to them.
+
+`eval_run` reports, per set: retrieval accuracy, deflection, out-of-scope escalation, guardrail results and latency. It also scores each answered question for **faithfulness** (is every claim supported by the retrieved article) and **answer relevance** using the Gemini chat model as judge, lists the worst five, and runs a **threshold sweep** of `MAX_DISTANCE` from 0.30 to 0.70 with a recommendation. The recommendation is advice and is never applied automatically.
+
+These commands call the Gemini API and use your quota. Run them against the local database (see above).
 ```bash
-docker compose exec backend python -m app.eval_generate   # writes eval_data/questions.json from the KB
-docker compose exec backend python -m app.eval_run        # writes eval_data/report.md
+# see what would run and the most calls it could use, without calling anything
+docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas   backend python -m app.eval_run --set hard --limit 10 --dry-run
+
+docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set generated
+docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set hard --limit 10
+docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set all
 ```
-The latest report is in `backend/app/eval_data/report.md`. `python -m app.tune` helps pick `MAX_DISTANCE`.
+Options: `--set generated|hard|all` (default `generated`), `--limit N` (evenly spaced sample of retrieval questions; guardrail checks cost nothing and always run), `--no-judge` (skip the two judge calls per answer), `--pause` (seconds between calls, default 1), `--timeout` (seconds per call, default 90), `--resume`, `--dry-run`, `--report PATH`.
+
+Each call is retried with exponential backoff, and every result is saved to `eval_data/.cache` (git-ignored) as soon as it is known. If a run stops, `--resume` reuses the saved results and only repeats questions that failed. Calls per question: 1 embedding, 1 chat (only if the best match is close enough) and 2 judge calls (only for answered questions). The report is written to `eval_data/report.md` with the date and a "How to read this" section.
+
+`python -m app.eval_generate` regenerates the generated set from the knowledge base, and `python -m app.tune` prints distances for a few questions.
+
+### Load test
+```bash
+docker compose run --rm -e DATABASE_URL=... backend python -m app.loadtest                       # mock mode, no Gemini, no database
+docker compose run --rm -e DATABASE_URL=... backend python -m app.loadtest --mode retrieval-only -n 50 -c 5 --yes
+python -m app.loadtest --mode full --url http://localhost:8000 -n 30 -c 3 --yes                  # against a running server
+```
+It sends `-n` requests to `POST /chat` with `-c` concurrent workers and reports requests per second, error rate, and median, p95 and p99 latency. The first lines of the output say which mode ran:
+- **mock** (default): the app runs in-process with a stubbed answer step. No Gemini calls and no database. It measures the app's own overhead only.
+- **retrieval-only**: real embedding and database search, no chat model. Spends one embedding call per request.
+- **full**: real requests to a running server. Spends up to one embedding and one chat call per request. Start that server with `RATE_LIMIT_ENABLED=false`, or the rate limit answers 429 (counted separately).
+
+The modes that spend quota refuse to run without `--yes`. The result is written as a marked "Load test" section of `report.md`, and `eval_run` keeps that section when it rewrites the report (`--no-report` skips it).
 
 ## Tests
 No Gemini calls and no real database are needed. Tests stub the database engine.
