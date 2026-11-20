@@ -33,3 +33,60 @@ def test_allow_remote_flag_overrides():
 def test_missing_or_invalid_url_is_refused(url):
     with pytest.raises(SystemExit):
         require_local_db(url, argv=[])
+
+
+# Password made of / ? # @ and letters, URL-encoded as it should be written
+ENCODED_PW = "p%2F%3F%23%40w"
+# The same characters written raw, which is a malformed URL
+RAW_PW = "p/?#@w"
+
+
+def test_host_is_read_correctly_with_url_encoded_special_chars():
+    require_local_db(f"postgresql+psycopg2://u:{ENCODED_PW}@db:5432/x", argv=[])
+    require_local_db(f"postgresql+psycopg2://u:{ENCODED_PW}@localhost:5432/x", argv=[])
+    with pytest.raises(SystemExit) as exc:
+        require_local_db(f"postgresql+psycopg2://u:{ENCODED_PW}@db.abc.supabase.co:5432/x", argv=[])
+    assert "db.abc.supabase.co" in str(exc.value)
+
+
+@pytest.mark.parametrize("host", ["db", "localhost", "db.abc.supabase.co"])
+def test_unencoded_special_chars_are_never_allowed_through(host):
+    # SQLAlchemy reads a host like "w@db" here, which is the host the engine would use,
+    # so the guard refuses it instead of guessing what was meant.
+    with pytest.raises(SystemExit):
+        require_local_db(f"postgresql+psycopg2://u:{RAW_PW}@{host}:5432/x", argv=[])
+
+
+def test_unencoded_slash_question_hash_without_at_sign_still_reads_host():
+    require_local_db("postgresql+psycopg2://u:p/?#w@db:5432/x", argv=[])
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"postgresql+psycopg2://u:{ENCODED_PW}@db.abc.supabase.co:5432/x",
+        f"postgresql+psycopg2://u:{RAW_PW}@db.abc.supabase.co:5432/x",
+        f"postgresql+psycopg2://u:{RAW_PW}@db:5432/x",
+        f"postgresql+psycopg2://u:{ENCODED_PW}@db:5432/x?host=evil.example.com",
+        "not a url, secret-pw",
+    ],
+)
+def test_error_message_never_contains_url_or_password(url):
+    with pytest.raises(SystemExit) as exc:
+        require_local_db(url, argv=[])
+    message = str(exc.value)
+    assert "postgresql" not in message
+    assert "://" not in message
+    for secret in (ENCODED_PW, RAW_PW, "p/?#", "@w", "w@", "secret-pw"):
+        assert secret not in message
+
+
+@pytest.mark.parametrize("key", ["host", "hostaddr"])
+def test_query_string_host_override_is_checked(key):
+    # psycopg2 connects to ?host=..., not the host in the URL, so the guard must check it too
+    with pytest.raises(SystemExit) as exc:
+        require_local_db(f"postgresql+psycopg2://u:pw@db:5432/x?{key}=evil.example.com", argv=[])
+    assert "evil.example.com" in str(exc.value)
+    require_local_db(f"postgresql+psycopg2://u:pw@db:5432/x?{key}=localhost", argv=[])
+    with pytest.raises(SystemExit):
+        require_local_db(f"postgresql+psycopg2://u:pw@db:5432/x?{key}=db&{key}=evil.example.com", argv=[])
