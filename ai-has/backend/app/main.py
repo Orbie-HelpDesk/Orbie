@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -9,6 +9,7 @@ from sqlalchemy import text
 from .db import engine
 from .guardrails import check_input, redact_pii
 from .rag import answer
+from .ratelimit import limit_chat, limit_tickets
 from .tickets import create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
@@ -73,7 +74,7 @@ def health():
     return {"status": "ok", "database": db}
 
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(limit_chat)])
 def chat(req: ChatRequest):
     # 1) Block injection attempts and oversized messages
     verdict = check_input(req.message)
@@ -98,7 +99,7 @@ def chat(req: ChatRequest):
     return result
 
 
-@app.post("/tickets")
+@app.post("/tickets", dependencies=[Depends(limit_tickets)])
 def new_ticket(req: TicketRequest):
     # Personal data never gets saved into a ticket
     clean, found = redact_pii(req.summary)

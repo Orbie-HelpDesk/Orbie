@@ -381,8 +381,17 @@ async function ask(question) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: question }),
     });
-    if (!res.ok) throw new Error(res.status);
-    data = await res.json();
+    if (res.status === 429) {
+      data = {
+        answer: "You're sending messages too quickly. Please wait a moment and try again.",
+        citations: [],
+        escalate: false,
+        distances: [],
+      };
+    } else {
+      if (!res.ok) throw new Error(res.status);
+      data = await res.json();
+    }
   } catch (err) {
     data = {
       answer: "Sorry, something went wrong. Please try again.",
