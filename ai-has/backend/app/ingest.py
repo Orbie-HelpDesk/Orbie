@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from .config import settings
 from .db import engine
+from .safety import require_local_db
 
 client = OpenAI(api_key=settings.gemini_api_key, base_url=settings.llm_base_url)
 KB_DIR = Path("/kb")
@@ -76,4 +77,5 @@ def ingest():
 
 
 if __name__ == "__main__":
+    require_local_db(settings.database_url)
     ingest()

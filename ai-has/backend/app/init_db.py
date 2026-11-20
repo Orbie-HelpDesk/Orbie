@@ -1,6 +1,7 @@
 """Create the schema and seed demo users. Safe to run many times.
 
 Run with: python -m app.init_db
+Refuses to run unless DATABASE_URL points at db or localhost (override: --allow-remote).
 
 Only runs CREATE ... IF NOT EXISTS and INSERT ... ON CONFLICT DO NOTHING, so it
 never drops, alters or overwrites existing data.
@@ -9,7 +10,9 @@ from pathlib import Path
 
 from sqlalchemy import text
 
+from .config import settings
 from .db import engine
+from .safety import require_local_db
 
 SCHEMA_FILE = Path(__file__).resolve().parent.parent / "schema.sql"
 
@@ -37,4 +40,5 @@ def init_db():
 
 
 if __name__ == "__main__":
+    require_local_db(settings.database_url)
     init_db()

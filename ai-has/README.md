@@ -53,6 +53,8 @@ docker compose run --rm --service-ports \
 ```
 `-e` overrides the value in `.env`. To reset the local data: `docker compose --profile local-db down -v`.
 
+`init_db` and `ingest` refuse to run unless the `DATABASE_URL` host is `db` or `localhost`. Passing `--allow-remote` overrides this, so only use it when the team lead has said to write to Supabase.
+
 Ingest needs a valid `GEMINI_API_KEY` in `.env`, because it creates embeddings.
 
 ## Database schema
