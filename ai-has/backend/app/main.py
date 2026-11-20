@@ -1,7 +1,8 @@
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -9,9 +10,39 @@ from sqlalchemy import text
 from .db import engine
 from .guardrails import check_input, redact_pii
 from .rag import answer
+from .ratelimit import limit_chat, limit_tickets
 from .tickets import create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
+
+logger = logging.getLogger(__name__)
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+GENERIC_ERROR = "Something went wrong. Please try again."
+
+
+@app.middleware("http")
+async def security_headers_and_safe_errors(request: Request, call_next):
+    """Adds security headers to every response and hides unexpected errors.
+
+    Normal HTTPException responses (400, 404, 429) and the 422 validation format are
+    built by FastAPI inside call_next and pass through unchanged. Only an exception
+    nobody handled becomes a generic 500. Its details go to the server log, never to
+    the client, so a database URL or key in an error message cannot leak.
+    """
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        response = JSONResponse(status_code=500, content={"detail": GENERIC_ERROR})
+    for name, value in SECURITY_HEADERS.items():
+        response.headers[name] = value
+    return response
+
 
 # Browsers must revalidate pages and scripts, so a rebuilt frontend is never hidden by an old cached copy
 NO_CACHE = {"Cache-Control": "no-cache"}
@@ -73,7 +104,7 @@ def health():
     return {"status": "ok", "database": db}
 
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(limit_chat)])
 def chat(req: ChatRequest):
     # 1) Block injection attempts and oversized messages
     verdict = check_input(req.message)
@@ -98,7 +129,7 @@ def chat(req: ChatRequest):
     return result
 
 
-@app.post("/tickets")
+@app.post("/tickets", dependencies=[Depends(limit_tickets)])
 def new_ticket(req: TicketRequest):
     # Personal data never gets saved into a ticket
     clean, found = redact_pii(req.summary)

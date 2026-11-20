@@ -50,10 +50,10 @@ def main():
             ],
         )
         lines = [
-            l.strip().lstrip("-*0123456789. )").strip()
-            for l in res.choices[0].message.content.splitlines()
+            line.strip().lstrip("-*0123456789. )").strip()
+            for line in res.choices[0].message.content.splitlines()
         ]
-        for q in [l for l in lines if len(l) > 10][:PER_ARTICLE]:
+        for q in [ln for ln in lines if len(ln) > 10][:PER_ARTICLE]:
             cases.append({"question": q, "expected_source": source, "in_scope": True})
         print(f"[gen] {source}: ok", flush=True)
 

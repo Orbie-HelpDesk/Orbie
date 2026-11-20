@@ -303,7 +303,7 @@ function renderBot(m, animate, onDone) {
   streamEl.appendChild(msg);
 
   const bubble = msg.querySelector(".bubble");
-  msg.querySelector(".meta").textContent = `AI-HAS · ${fmtTime(m.ts)}`;
+  msg.querySelector(".meta").textContent = `Orbie · ${fmtTime(m.ts)}`;
 
   fillBubble(bubble, d.answer, animate, () => {
     if (d.distances && d.distances.length) bubble.appendChild(buildTrace(d));
@@ -381,8 +381,17 @@ async function ask(question) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: question }),
     });
-    if (!res.ok) throw new Error(res.status);
-    data = await res.json();
+    if (res.status === 429) {
+      data = {
+        answer: "You're sending messages too quickly. Please wait a moment and try again.",
+        citations: [],
+        escalate: false,
+        distances: [],
+      };
+    } else {
+      if (!res.ok) throw new Error(res.status);
+      data = await res.json();
+    }
   } catch (err) {
     data = {
       answer: "Sorry, something went wrong. Please try again.",

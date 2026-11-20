@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime
 from contextlib import contextmanager
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
