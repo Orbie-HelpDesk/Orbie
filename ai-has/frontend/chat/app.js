@@ -303,7 +303,7 @@ function renderBot(m, animate, onDone) {
   streamEl.appendChild(msg);
 
   const bubble = msg.querySelector(".bubble");
-  msg.querySelector(".meta").textContent = `AI-HAS · ${fmtTime(m.ts)}`;
+  msg.querySelector(".meta").textContent = `Orbie · ${fmtTime(m.ts)}`;
 
   fillBubble(bubble, d.answer, animate, () => {
     if (d.distances && d.distances.length) bubble.appendChild(buildTrace(d));
