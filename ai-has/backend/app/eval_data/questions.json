@@ -1,0 +1,137 @@
+[
+  {
+    "question": "How do I properly reboot my Windows computer?",
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "in_scope": true
+  },
+  {
+    "question": "Why is my laptop running so slowly and what can I do about it?",
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "in_scope": true
+  },
+  {
+    "question": "What should I do if my computer keeps freezing up on me?",
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "in_scope": true
+  },
+  {
+    "question": "How do I get my work email set up on my phone?",
+    "expected_source": "email-setup.md",
+    "in_scope": true
+  },
+  {
+    "question": "What should I do if I can't get signed into my email on my phone?",
+    "expected_source": "email-setup.md",
+    "in_scope": true
+  },
+  {
+    "question": "Is there a specific app I need to download to check my work email?",
+    "expected_source": "email-setup.md",
+    "in_scope": true
+  },
+  {
+    "question": "How do I change my password if I’ve been locked out of my account?",
+    "expected_source": "password-reset.md",
+    "in_scope": true
+  },
+  {
+    "question": "What are the rules for creating a new password for my work account?",
+    "expected_source": "password-reset.md",
+    "in_scope": true
+  },
+  {
+    "question": "I forgot my login info, what do I need to do to get back in?",
+    "expected_source": "password-reset.md",
+    "in_scope": true
+  },
+  {
+    "question": "Why is my document stuck in the printer queue?",
+    "expected_source": "printer-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "What should I do if my printer is showing an error light?",
+    "expected_source": "printer-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "How do I fix it if my printer won't print from my computer?",
+    "expected_source": "printer-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "How do I request a license for a new app like Slack or Figma?",
+    "expected_source": "software-access-request.md",
+    "in_scope": true
+  },
+  {
+    "question": "What's the process if I need access to a software program for my job?",
+    "expected_source": "software-access-request.md",
+    "in_scope": true
+  },
+  {
+    "question": "Where do I go to ask for permission to use Adobe or Microsoft Office?",
+    "expected_source": "software-access-request.md",
+    "in_scope": true
+  },
+  {
+    "question": "Why can't I get my VPN to connect to the office network?",
+    "expected_source": "vpn-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "Is there anything I should try if my VPN keeps dropping the connection?",
+    "expected_source": "vpn-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "What should I do if my VPN is still giving me errors after I've tried restarting it?",
+    "expected_source": "vpn-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "Why does my office internet keep cutting out?",
+    "expected_source": "wifi-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "What should I do if I can't get connected to the company Wi-Fi?",
+    "expected_source": "wifi-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "My internet is super slow today, is there anything I can try to fix it?",
+    "expected_source": "wifi-troubleshooting.md",
+    "in_scope": true
+  },
+  {
+    "question": "What is a good recipe for chicken adobo?",
+    "expected_source": null,
+    "in_scope": false
+  },
+  {
+    "question": "Who won the NBA finals last year?",
+    "expected_source": null,
+    "in_scope": false
+  },
+  {
+    "question": "How do I file my income tax return?",
+    "expected_source": null,
+    "in_scope": false
+  },
+  {
+    "question": "What is the weather in Manila today?",
+    "expected_source": null,
+    "in_scope": false
+  },
+  {
+    "question": "Can you translate 'good morning' into Japanese?",
+    "expected_source": null,
+    "in_scope": false
+  },
+  {
+    "question": "How much is the salary of a software engineer in Canada?",
+    "expected_source": null,
+    "in_scope": false
+  }
+]
