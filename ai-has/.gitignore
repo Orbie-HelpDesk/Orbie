@@ -7,3 +7,7 @@ node_modules/
 .venv/
 chroma_data/
 pgdata/
+
+# Evaluation: saved progress and trial reports
+backend/app/eval_data/.cache/
+backend/app/eval_data/*trial*.md
