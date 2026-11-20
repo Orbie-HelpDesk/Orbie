@@ -30,7 +30,8 @@ flowchart LR
 | Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets (messages, conversations and audit_logs tables are defined but not written yet) |
 | LLM | Gemini via OpenAI-compatible endpoint | Embeddings and answers; model names come from `.env` |
 | Local test DB | `pgvector/pgvector:pg16`, compose profile `local-db` | Testing without touching Supabase |
-| Evaluation | `eval_generate.py`, `eval_run.py` | Retrieval accuracy, deflection, escalation, guardrail and latency report |
+| Evaluation | `eval_run.py`, `eval_judge.py`, `eval_metrics.py`, `eval_report.py`, `eval_generate.py` | Generated and hand-written hard question sets, retrieval accuracy, deflection, escalation, guardrails, LLM-judged faithfulness and relevance, MAX_DISTANCE sweep, retries and resumable runs |
+| Load test | `loadtest.py` | Requests per second, error rate and latency percentiles for `POST /chat`, in mock, retrieval-only or full mode |
 
 Docker compose runs one service, `backend`, plus `db` under the `local-db` profile. There is no ChromaDB and no n8n container.
 
@@ -54,10 +55,18 @@ Tables: `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chu
 Scripts that write data (`init_db`, `ingest`) run only when the `DATABASE_URL` host is `db` or `localhost`, unless `--allow-remote` is passed (`safety.py`). Schema changes must be additive and idempotent.
 
 ## Testing and CI
-`pytest` runs without Gemini or a real database by stubbing the engine. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`.
+`pytest` runs without Gemini or a real database by stubbing the engine. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`. Their helpers (scoring, judge JSON parsing, sweep, report text, load test statistics) are covered by tests that use fake data.
 
 ## Not built yet
 - n8n workflows and mock Jira or Active Directory actions
 - Intent classification and function calling
 - Saving conversations, messages and audit logs (tables exist, nothing writes to them)
 - Authentication for the admin dashboard and output guardrails on the answer
+
+## Evaluation flow
+1. For each question, `retrieve` embeds it and runs hybrid search (1 embedding call). The best distance is kept, because the threshold sweep reuses it.
+2. `answer(question, chunks)` reuses those chunks, so the question is not searched twice. If the best distance is above `MAX_DISTANCE` it escalates, otherwise it calls the chat model once.
+3. For an answered question, the judge makes two separate calls: faithfulness (sees the context the model was given) and relevance (sees only the question and answer). Each returns strict JSON; unusable replies are counted and left out of the averages.
+4. Guardrail cases (injection, PII, harmless messages) run locally with no API calls.
+5. The sweep counts, for each `MAX_DISTANCE` from 0.30 to 0.70, in-scope questions that would be wrongly escalated and out-of-scope questions that would be wrongly answered, and recommends the middle of the flat stretch with the fewest errors.
+6. Results are saved to `eval_data/.cache` one by one, and `eval_data/report.md` is built from them. The load test keeps its own marked section in the same file.
