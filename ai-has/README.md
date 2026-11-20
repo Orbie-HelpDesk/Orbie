@@ -1,5 +1,9 @@
 # AI-HAS: AI-Powered Enterprise Helpdesk & Workflow Automation System
 
+![CI](https://github.com/Orbie-HelpDesk/ITPE-FinalSum/actions/workflows/ci.yml/badge.svg)
+
+The CI check (ruff, pytest, docker build) is advisory unless branch protection is enabled on `main`. The team lead should check whether the repo plan allows branch protection.
+
 Capstone project: Applied Generative AI for IT Solution Development.
 
 ## What it does
