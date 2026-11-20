@@ -2,16 +2,13 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    openai_api_key: str = ""
-    openai_chat_model: str = "gpt-4o-mini"
-    openai_embed_model: str = "text-embedding-3-small"
-    database_url: str = "postgresql+psycopg2://aihas:aihas@localhost:5432/aihas"
-    chroma_host: str = "localhost"
-    chroma_port: int = 8000
+    gemini_api_key: str = ""
+    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    chat_model: str = "gemini-2.5-flash"
+    embed_model: str = "gemini-embedding-001"
+    embed_dimensions: int = 768
+    database_url: str = ""
     n8n_webhook_url: str = "http://localhost:5678/webhook"
-
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()
