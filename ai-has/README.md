@@ -7,7 +7,7 @@ The CI check (ruff, pytest, docker build) is advisory unless branch protection i
 Capstone project: Applied Generative AI for IT Solution Development.
 
 ## What it does
-- **Chat** (`/`): employees describe an IT problem and get an answer grounded in the knowledge base in `kb/`, with citations.
+- **Chat** (`/`): employees describe an IT problem and get an answer from **Orbie**, the assistant. Answers are grounded in the knowledge base in `kb/`, with citations. AI-HAS is the product name.
 - **Guardrails:** every message is checked for prompt injection and length before it reaches the AI. Personal data (emails, phone numbers, card numbers, API keys, passwords) is redacted first.
 - **Tickets:** when the answer is "not found", the "Create a ticket" button creates a real ticket. Ticket text is also PII-redacted.
 - **Admin dashboard** (`/admin`): ticket KPIs, a ticket list with a status filter, and status changes (open, in progress, resolved).
@@ -32,6 +32,11 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 | GET | `/docs` | API docs |
 
 Pages and static files are sent with `Cache-Control: no-cache`, so a rebuilt frontend is not hidden by an old cached copy.
+
+## Security basics
+- **Rate limits** per client IP, in memory: `POST /chat` 20 per minute and `POST /tickets` 10 per minute. Over the limit the API returns 429 with `Retry-After`. Set `RATE_LIMIT_ENABLED`, `RATE_LIMIT_CHAT_PER_MIN` and `RATE_LIMIT_TICKETS_PER_MIN` in `.env` (names and defaults are in `.env.example`). `RATE_LIMIT_ENABLED=false` switches all limits off, for example for a load test. The counters are per process and reset on restart. The limit uses the direct client IP, so behind a reverse proxy all users share one IP.
+- **Security headers** on every response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
+- **Safe errors:** an unexpected error returns `{"detail": "Something went wrong. Please try again."}` with status 500. The details only go to the server log, so no stack trace, database URL or key reaches the client. Normal 400, 404, 429 and 422 responses are unchanged.
 
 ## Quick start (Supabase)
 ```bash
@@ -102,7 +107,14 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: `/health`, the models import, the local-db guard, ticket creation and its user fallback, and the no-cache headers.
+Covered: `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+
+### Lint and CI
+```bash
+pip install ruff==0.17.6
+ruff check backend tests
+```
+GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
 - `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `ingest.py`, `init_db.py`, `safety.py`, `eval_*.py`, `tune.py`

@@ -22,8 +22,9 @@ flowchart LR
 | Component | Tech | Role |
 |---|---|---|
 | Backend | FastAPI (Python 3.12) | Routes, RAG orchestration, guardrails, tickets, serves both pages |
-| Chat page | HTML, CSS, JS in `frontend/chat/` | Chat, history in the browser, "Create a ticket" button |
+| Chat page | HTML, CSS, JS in `frontend/chat/` | Chat with Orbie (the assistant's name; AI-HAS is the product), history in the browser, "Create a ticket" button |
 | Admin dashboard | HTML, CSS, JS in `frontend/admin/` | Ticket KPIs, list with status filter, status changes |
+| Rate limit and security | `ratelimit.py`, middleware in `main.py` | Per-IP rate limits on `/chat` and `/tickets`, security headers on every response, generic 500 for unhandled errors |
 | Guardrails | `guardrails.py` | Blocks prompt injection and over-long messages, redacts PII before the AI or the database sees it |
 | Tickets | `tickets.py` | Create, list, change status, KPI stats |
 | Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets (messages, conversations and audit_logs tables are defined but not written yet) |
@@ -34,6 +35,7 @@ flowchart LR
 Docker compose runs one service, `backend`, plus `db` under the `local-db` profile. There is no ChromaDB and no n8n container.
 
 ## Request flow: chat
+0. Every request first passes the middleware (security headers, generic 500 on unhandled errors). `POST /chat` and `POST /tickets` also pass the per-IP rate limit and get 429 when over it.
 1. `check_input` blocks messages over 1000 characters and known injection patterns. A blocked message gets a fixed reply and never reaches the AI.
 2. `redact_pii` replaces emails, phone numbers, valid card numbers, API keys and passwords with `[REDACTED]`. Only the cleaned text is used from here on.
 3. The question is embedded and hybrid search runs over `kb_chunks` (vector distance plus full-text, merged by rank).
@@ -51,8 +53,8 @@ Tables: `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chu
 
 Scripts that write data (`init_db`, `ingest`) run only when the `DATABASE_URL` host is `db` or `localhost`, unless `--allow-remote` is passed (`safety.py`). Schema changes must be additive and idempotent.
 
-## Testing
-`pytest` runs without Gemini or a real database by stubbing the engine. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`.
+## Testing and CI
+`pytest` runs without Gemini or a real database by stubbing the engine. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`.
 
 ## Not built yet
 - n8n workflows and mock Jira or Active Directory actions
