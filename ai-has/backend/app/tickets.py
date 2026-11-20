@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import text
 
 from .db import engine
@@ -6,9 +8,28 @@ PRIORITIES = {"low", "medium", "high"}
 STATUSES = {"open", "in_progress", "resolved"}
 DEFAULT_USER = "employee@company.com"
 
+logger = logging.getLogger(__name__)
+
 
 def _ref(ticket_id: int) -> str:
     return f"TCK-{ticket_id:04d}"
+
+
+def _find_user_id(conn, user_email: str) -> int:
+    """Id of the requested user. If that email is not in the database, use the first employee."""
+    user_id = conn.execute(
+        text("select id from users where email = :e"), {"e": user_email}
+    ).scalar()
+    if user_id is not None:
+        return user_id
+
+    user_id = conn.execute(
+        text("select id from users where role = 'employee' order by id limit 1")
+    ).scalar()
+    if user_id is None:
+        raise ValueError("No employee user found to own the ticket")
+    logger.warning("Ticket user %s not found, using fallback employee user id %s", user_email, user_id)
+    return user_id
 
 
 def create_ticket(
@@ -22,11 +43,7 @@ def create_ticket(
         priority = "medium"
 
     with engine.begin() as conn:
-        user_id = conn.execute(
-            text("select id from users where email = :e"), {"e": user_email}
-        ).scalar()
-        if user_id is None:
-            raise ValueError(f"Unknown user: {user_email}")
+        user_id = _find_user_id(conn, user_email)
 
         row = conn.execute(
             text(

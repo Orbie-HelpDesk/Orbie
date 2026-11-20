@@ -92,7 +92,10 @@ def chat(req: ChatRequest):
 def new_ticket(req: TicketRequest):
     # Personal data never gets saved into a ticket
     clean, found = redact_pii(req.summary)
-    ticket = create_ticket(clean, req.priority, source="escalation")
+    try:
+        ticket = create_ticket(clean, req.priority, source="escalation")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     ticket["redacted"] = found
     return ticket
 
