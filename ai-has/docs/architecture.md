@@ -1,37 +1,54 @@
 # AI-HAS Architecture
 
+## What runs today
+
 ```mermaid
 flowchart LR
-    U[Employee] --> FE[Chat UI]
+    U[Employee] --> FE[Chat UI<br/>HTML, CSS, JS]
     FE -->|POST /chat| API[FastAPI Backend]
-    API --> G1[Input Guardrails<br/>PII redaction + injection check]
-    G1 --> IC[Intent Classifier<br/>gpt-4o-mini]
-    IC -->|how-to / troubleshooting| RAG[RAG Retriever]
-    RAG <--> VDB[(ChromaDB)]
-    IC -->|action request| FC[Function Calling]
-    FC --> N8N[n8n Webhooks]
-    N8N --> EXT[Mock Jira / AD]
-    IC -->|unknown / low confidence| ESC[Escalate to Human]
-    RAG --> LLM[Grounded Answer + Citations]
-    LLM --> G2[Output Guardrails]
-    G2 --> FE
-    API <--> DB[(PostgreSQL)]
-    ESC --> AG[Agent Dashboard]
-    API --> ADM[Admin KPI Dashboard]
+    API --> RAG[Hybrid Search<br/>vector + full-text]
+    RAG <--> DB[(PostgreSQL + pgvector<br/>Supabase)]
+    RAG --> LLM[Gemini<br/>grounded answer + citations]
+    LLM --> FE
+    RAG -->|no good match / NO_ANSWER| ESC[Not found + escalate=true]
+    ESC --> FE
+```
+
+## Planned (not built yet)
+
+```mermaid
+flowchart LR
+    API[FastAPI Backend] -.-> G1[Input Guardrails<br/>PII redaction + injection check]
+    G1 -.-> IC[Intent Classifier]
+    IC -.->|action request| FC[Function Calling]
+    FC -.-> N8N[n8n Webhooks]
+    N8N -.-> EXT[Mock Jira / AD]
+    API -.-> G2[Output Guardrails]
+    API -.-> AG[Agent Dashboard]
+    API -.-> ADM[Admin KPI Dashboard]
 ```
 
 ## Components
-| Component | Tech | Role |
-|---|---|---|
-| Backend | FastAPI | Chat API, RAG orchestration, tool handlers |
-| Vector DB | ChromaDB | SOP embeddings |
-| Relational DB | PostgreSQL | Users, tickets, messages, audit logs |
-| Automation | n8n | Ticket creation, password reset webhooks |
-| LLM | gpt-4o-mini | Intent, answers, function calling |
+| Component | Tech | Status | Role |
+|---|---|---|---|
+| Backend | FastAPI (Python 3.12) | Running | Chat API, RAG orchestration, serves the frontend |
+| Frontend | Plain HTML, CSS, JS at `/static` | Running | Chat page, history kept in the browser |
+| Database | PostgreSQL with pgvector on Supabase | Running | KB chunks and vectors; users, tickets, messages, audit logs tables defined |
+| LLM | Gemini via OpenAI-compatible endpoint | Running | Embeddings and answers; model names come from `.env` |
+| Local test DB | pgvector/pgvector Postgres, compose profile `local-db` | Running | Testing without touching Supabase |
+| Automation | n8n | Planned | Ticket creation, password reset webhooks |
+| Guardrails | PII redaction, injection checks | Planned | Input and output safety |
+| Dashboards | Agent and admin views | Planned | Escalations and KPIs |
 
-## Request flow
-1. Redact PII and check for prompt injection.
-2. Classify intent.
-3. Route: RAG answer, function call, or escalate.
-4. Save message with citations, confidence, latency.
-5. Return the answer (streamed).
+Docker compose runs one service today, `backend` (plus `db` under the `local-db` profile). There is no ChromaDB and no n8n container.
+
+## Request flow (current)
+1. Embed the question and run hybrid search over `kb_chunks` (vector distance plus full-text, merged by rank).
+2. If the best distance is above 0.5, return the "not found" message with `escalate=true`.
+3. Otherwise send the closest chunks to Gemini with a prompt that allows answers only from that context.
+4. If the model replies NO_ANSWER, return "not found" with `escalate=true`. Else return the answer, citations and distances.
+
+Messages, tickets and audit logs are not written yet.
+
+## Database tables
+`users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`. See `backend/schema.sql`, which must be verified against the real Supabase definition.
