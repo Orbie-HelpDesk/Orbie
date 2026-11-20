@@ -14,7 +14,7 @@ app = FastAPI(title="AI-HAS", version="0.1.0")
 FRONTEND_DIR = Path("/frontend")
 
 # Serves styles.css and app.js at /static/...
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR, check_dir=False), name="static")
 
 
 class ChatRequest(BaseModel):
