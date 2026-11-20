@@ -201,7 +201,7 @@ def save_record(set_name: str, rec: dict) -> None:
 def call_budget(n_questions: int, judge_on: bool) -> str:
     return (
         f"{n_questions} embedding + up to {n_questions} chat + up to {2 * n_questions if judge_on else 0} judge "
-        f"= at most {n_questions * (3 if judge_on else 2)} Gemini calls (before retries)"
+        f"= at most {n_questions * (4 if judge_on else 2)} Gemini calls (before retries)"
     )
 
 

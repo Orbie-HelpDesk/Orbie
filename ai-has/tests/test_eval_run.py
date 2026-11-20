@@ -130,7 +130,7 @@ def test_dry_run_makes_no_calls_and_lists_the_sample(stubs, capsys):
     e.main(["--set", "hard", "--limit", "10", "--dry-run"])
     out = capsys.readouterr().out
     assert "10 of 37 retrieval questions" in out
-    assert "10 embedding + up to 10 chat + up to 20 judge = at most 30 Gemini calls" in out
+    assert "10 embedding + up to 10 chat + up to 20 judge = at most 40 Gemini calls" in out
     assert stubs.retrieves == [] and stubs.answers == []
 
 
