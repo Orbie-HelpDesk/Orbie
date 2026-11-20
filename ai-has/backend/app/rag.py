@@ -118,7 +118,6 @@ def answer(question: str) -> dict:
     context = "\n\n---\n\n".join(
         f"[Source: {c['metadata'].get('source')}]\n{c['content']}" for c in chunks
     )
-    print("[debug] sources in context:", [c["metadata"].get("source") for c in chunks], "distances:", distances, flush=True)
     res = client.chat.completions.create(
         model=settings.chat_model,
         messages=[
@@ -129,7 +128,6 @@ def answer(question: str) -> dict:
     print(f"[timing] answer total: {time.time() - t0:.1f}s", flush=True)
 
     reply = res.choices[0].message.content.strip()
-    print("[debug] raw reply:", repr(reply[:300]), flush=True)
     if reply.startswith("NO_ANSWER"):
         return {
             "answer": NOT_FOUND_MESSAGE,
