@@ -122,8 +122,12 @@ def _run(call, model: str, timeout: float, deadline: float, retry: bool = True) 
         attempt += 1
 
 
-def chat(client, **kwargs):
-    """chat.completions.create with the configured model, timeout, retries and budget."""
+def chat(client, *, single_attempt: bool = False, **kwargs):
+    """chat.completions.create with the configured model, timeout, retries and budget.
+
+    single_attempt=True is for optional calls that have their own plan B: one try on the main
+    model, no retries and no fallback model.
+    """
     deadline = _clock() + settings.llm_call_budget_seconds
 
     def call(model, timeout):
@@ -131,10 +135,10 @@ def chat(client, **kwargs):
 
     model = settings.chat_model
     try:
-        response = _run(call, model, settings.chat_timeout_seconds, deadline)
+        response = _run(call, model, settings.chat_timeout_seconds, deadline, retry=not single_attempt)
     except _Failed as failed:
         fallback = settings.chat_model_fallback.strip()
-        if not fallback or fallback == model or failed.kind not in FALLBACK_KINDS:
+        if single_attempt or not fallback or fallback == model or failed.kind not in FALLBACK_KINDS:
             raise ProviderUnavailable(failed.kind, failed.status) from None
         logger.warning("Main model failed (kind=%s), trying fallback model=%s once", failed.kind, fallback)
         timeout = min(settings.chat_timeout_seconds, max(deadline - _clock(), FALLBACK_MIN_SECONDS))
