@@ -20,7 +20,7 @@ def chat(monkeypatch, login_as):
     monkeypatch.setattr(chatlog, "engine", db)
     state = {"db": db, "result": dict(ANSWERED), "answered": [], "attached": [], "tickets": []}
 
-    def fake_answer(q):
+    def fake_answer(q, history=None, retrieval_query=None):
         state["answered"].append(q)
         return dict(state["result"])
 

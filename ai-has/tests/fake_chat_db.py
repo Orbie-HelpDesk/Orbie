@@ -80,9 +80,16 @@ class FakeChatConn:
         if "update conversations set status = 'escalated'" in sql:
             db.conversations[params["c"]]["status"] = "escalated"
             return Result(rowcount=1)
-        if "select coalesce(outcome, intent) from messages" in sql:
-            mine = [m for m in db.messages if m["conversation_id"] == params["c"] and m["role"] == "assistant"]
-            return Result(mine[-1].get("outcome") or mine[-1]["intent"] if mine else None)
+        if "and not blocked and content <> :p" in sql:
+            mine = [
+                m for m in db.messages
+                if m["conversation_id"] == params["c"] and not m["blocked"] and m["content"] != params["p"]
+            ]
+            rows = [
+                {"role": m["role"], "content": m["content"], "outcome": m.get("outcome") or m["intent"]}
+                for m in mine[-params["n"]:]
+            ]
+            return Result(rows=rows)
         if "update messages set feedback" in sql:
             msg = next((m for m in db.messages if m["id"] == params["m"]), None)
             owner = db.conversations.get(msg["conversation_id"], {}).get("user_id") if msg else None

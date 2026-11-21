@@ -42,7 +42,7 @@ def seen(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "update_status", fake_status)
     monkeypatch.setattr(main, "create_ticket", fake_ticket)
-    monkeypatch.setattr(main, "answer", lambda q: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
+    monkeypatch.setattr(main, "answer", lambda q, **kw: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
     monkeypatch.setattr(main, "propose_action", lambda q, intent: None)
     monkeypatch.setattr(main.proposals, "propose", fake_propose)
     monkeypatch.setattr(

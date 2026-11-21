@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import analytics, audit, chatlog, llm, proposals
+from . import analytics, audit, chatlog, llm, memory, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -357,7 +357,10 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     # 3) What does the user want? Rules decide when they are sure. Only when they are not, one
     #    small model call decides (see intent.py).
     guardrails = {"blocked": False, "reason": None, "redacted": found}
-    found_intent = classify(clean)
+    #    A follow-up like "it still doesn't work" is classified, and searched, as a standalone question.
+    turns = chatlog.recent_turns(req.conversation_id if saving else None, memory.max_turns())
+    standalone = memory.standalone_question(clean, turns)
+    found_intent = classify(standalone)
     name = found_intent.name
     shown_intent = found_intent.as_dict()
 
@@ -400,7 +403,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
 
     # 3c) Unclear: ask one clarifying question, and if the next answer is still unclear, escalate
     elif name == UNKNOWN:
-        if chatlog.last_outcome(conversation_id) == chatlog.OUTCOME_CLARIFY:
+        if turns and turns[-1]["role"] == "assistant" and turns[-1]["outcome"] == chatlog.OUTCOME_CLARIFY:
             return _save_exchange(
                 plain(STILL_UNCLEAR_MESSAGE, escalate=True), user, conversation_id, clean, started,
                 intent=name, outcome=chatlog.OUTCOME_ESCALATED, escalated=True,
@@ -412,7 +415,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
 
     # 4) how_to and vpn_issue (and an action that was not offered): the knowledge base answers,
     #    using only the cleaned text
-    result = answer(clean)
+    result = answer(clean, history=memory.history_messages(turns), retrieval_query=standalone)
     result["proposed_action"] = None
     result["intent"] = shown_intent
     result["guardrails"] = guardrails

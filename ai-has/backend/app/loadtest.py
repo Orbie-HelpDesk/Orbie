@@ -151,7 +151,7 @@ async def run_requests(client: httpx.AsyncClient, plan: list[str], concurrency: 
 
 
 def _stub_answer(mock_latency_ms: float):
-    def answer(question: str, chunks=None) -> dict:
+    def answer(question: str, chunks=None, **kwargs) -> dict:
         if mock_latency_ms:
             time.sleep(mock_latency_ms / 1000)
         return {"answer": "mock answer", "citations": [], "escalate": False, "distances": []}
@@ -162,7 +162,7 @@ def _stub_answer(mock_latency_ms: float):
 def _retrieval_only_answer():
     from .rag import MAX_DISTANCE, NOT_FOUND_MESSAGE, retrieve
 
-    def answer(question: str, chunks=None) -> dict:
+    def answer(question: str, chunks=None, **kwargs) -> dict:
         found = retrieve(question)
         best = min((c["distance"] for c in found), default=None)
         escalate = best is None or best > MAX_DISTANCE

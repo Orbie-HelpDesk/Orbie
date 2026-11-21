@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     embed_timeout_seconds: float = 20.0  # one embedding attempt
     llm_call_budget_seconds: float = 45.0  # all attempts of one logical call, retries included
     intent_confidence_threshold: float = 0.75  # below this the rules are not sure enough
+    history_turns: int = 4  # earlier exchanges (a question and its answer) sent with a question. 0 turns memory off
     intent_use_model: bool = True  # one small model call when the rules are not sure
     n8n_webhook_url: str = "http://localhost:5678/webhook"
     n8n_webhook_secret: str = ""

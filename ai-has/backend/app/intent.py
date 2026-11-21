@@ -92,7 +92,7 @@ INFORMATIONAL = _p(r"^\W*(how|what|why|where|when|which|paano|pano|pa'?no|bakit|
 
 # Everyday IT topics the knowledge base covers. A message about one of them goes to RAG.
 TOPIC = _p(
-    r"\b(wi-?fi|internet|network|router|printer|print\w*|scan\w*|e-?mail|outlook|inbox|mailbox|calendar|"
+    r"\b(vpn|wi-?fi|internet|network|router|printer|print\w*|scan\w*|e-?mail|outlook|inbox|mailbox|calendar|"
     r"laptop|computer|pc|desktop|monitor|keyboard|mouse|screen|"
     r"slow|lag|laggy|freez\w*|frozen|hang|restart\w*|crash\w*|bagal|"
     r"password|passcode|pw|login|log ?in|sign ?in|mfa|2fa|otp|authenticator|"

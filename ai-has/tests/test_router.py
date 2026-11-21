@@ -22,7 +22,8 @@ def chat(monkeypatch, login_as):
     monkeypatch.setattr(chatlog, "engine", db)
     state = {"db": db, "answered": [], "proposed": [], "stored": [], "attached": [], "mp": monkeypatch}
 
-    def fake_answer(question, chunks=None):
+    def fake_answer(question, chunks=None, history=None, retrieval_query=None):
+        state["history"], state["retrieval"] = history, retrieval_query
         state["answered"].append(question)
         return dict(ANSWER)
 
@@ -200,7 +201,7 @@ def test_a_blocked_message_has_no_intent_and_the_router_never_runs(chat):
 
 
 def test_a_provider_failure_in_the_answer_is_still_a_503(chat):
-    def down(question, chunks=None):
+    def down(question, **kw):
         raise llm.ProviderUnavailable("server", 503)
 
     chat["mp"].setattr(main, "answer", down)

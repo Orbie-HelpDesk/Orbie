@@ -120,22 +120,30 @@ def save_exchange(
     return {"conversation_id": conversation_id, "message_id": message_id}
 
 
-def last_outcome(conversation_id: int | None) -> str | None:
-    """What happened to the last assistant message of a conversation, or None. Never raises."""
-    if not conversation_id:
-        return None
+def recent_turns(conversation_id: int | None, exchanges: int) -> list[dict]:
+    """The last `exchanges` question and answer pairs of a conversation, oldest first. Never raises.
+
+    Each item has role, content (already redacted) and outcome. Blocked messages are left out, so
+    their placeholder never reaches the model. The caller must already know the conversation is the
+    caller's own.
+    """
+    if not conversation_id or exchanges <= 0:
+        return []
     try:
         with engine.connect() as conn:
-            return conn.execute(
+            rows = conn.execute(
                 text(
-                    "select coalesce(outcome, intent) from messages "
-                    "where conversation_id = :c and role = 'assistant' order by id desc limit 1"
+                    "select role, content, coalesce(outcome, intent) as outcome from ("
+                    "select id, role, content, outcome, intent from messages "
+                    "where conversation_id = :c and not blocked and content <> :p "
+                    "order by id desc limit :n) recent order by id"
                 ),
-                {"c": conversation_id},
-            ).scalar()
+                {"c": conversation_id, "p": PURGED_TEXT, "n": exchanges * 2},
+            ).mappings().all()
+        return [dict(r) for r in rows]
     except Exception:
-        logger.exception("Could not read the last outcome of conversation %s", conversation_id)
-        return None
+        logger.exception("Could not read the history of conversation %s", conversation_id)
+        return []
 
 
 def mark_escalated(conversation_id: int) -> None:
