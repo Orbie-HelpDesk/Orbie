@@ -55,6 +55,7 @@ flowchart LR
 | Authentication | `auth.py`, `sessions.py`, `passwords.py`, `loginlimit.py`, `set_password.py` | PBKDF2 password hashes (standard library), signed `HttpOnly`, `SameSite=Lax` session cookie, role checks as FastAPI dependencies, failed login limits, a hidden-prompt helper to set passwords |
 | Chat history | `chatlog.py` | Saves each exchange (redacted text, citations, confidence, latency, intent, outcome, flags), lists, reads and deletes conversations, stores thumbs. Failures never stop an answer |
 | Analytics | `analytics.py`, `GET /stats/analytics` | Questions per day, deflection rate, median and p95 latency, thumbs share, top cited articles, most escalated questions. Staff only |
+| Knowledge base page | `kb.py`, `ingest.py`, HTML, CSS, JS in `frontend/kb/` | Admin-only list, markdown editor, save with re-index of one article, delete and a retrieval test box. The script and the page share `ingest.prepare_article` and `ingest.store_article`. Changes need a local database unless `KB_EDIT_ALLOW_REMOTE` is true |
 | Retention | `purge_old.py` | Replaces old message text and conversation titles with `[purged]`, keeps the numbers. Local database unless `--allow-remote` |
 | Audit | `audit.py` | One place that writes `audit_logs` rows without personal data |
 | Rate limit and security | `ratelimit.py`, middleware in `main.py` | Per-IP rate limits on `/chat` and `/tickets`, security headers on every response, generic 500 for unhandled errors |
@@ -92,6 +93,14 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 4. Pages: a logged-out `/` or `/admin` redirects to `/login` (the `next` value must be a local path), and an employee opening `/admin` gets a 403 page.
 5. A middleware rejects any POST, PATCH or DELETE that is not JSON (415) or that carries a foreign `Origin` (403). Together with `SameSite=Lax` and no CORS, this blocks simple cross-site form posts.
 6. Logout clears the cookie and writes a `logout` row. The token is stateless, so a copy stays valid until it expires.
+
+## Request flow: knowledge base page
+1. `/admin/kb` and every `/kb` route need the `admin` role: 401 when logged out (the page redirects to the login), 403 for an agent or an employee.
+2. `PUT /kb/{source}` checks the name (lowercase letters, digits, dashes, `.md`, not a reserved name), the path (directly inside the KB folder, no symlink), the size (`KB_MAX_BYTES`) and the heading, and refuses to change anything unless the database is local or `KB_EDIT_ALLOW_REMOTE` is true.
+3. The article is chunked and embedded first, through `llm.py` in batches of 50. If that fails nothing has changed (503 with `Retry-After`).
+4. A temp file is written, then one transaction replaces the article's `kb_documents` and `kb_chunks` rows and writes the `kb_create` or `kb_update` audit row (file name only), and only then is the file moved into place. If the transaction fails the temp file is removed and the old article is untouched.
+5. `DELETE /kb/{source}` removes the rows and the audit row in one transaction, then the file. `GET /kb` compares the folder with the index and marks each article `indexed`, `not_indexed` or `file_missing`.
+6. `POST /kb/test` runs `rag.retrieve` (one embedding call) and returns the chunks and distances. It never calls the answer step.
 
 ## Request flow: saving a chat
 1. `POST /chat` may carry a `conversation_id`. It must be one of the caller's own conversations, otherwise 404 before anything runs (not even staff can write into another user's chat).
