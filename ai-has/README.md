@@ -41,6 +41,7 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 | PATCH | `/tickets/{id}` | Agent or admin. Change status (audited) |
 | GET | `/stats` | Agent or admin. Ticket totals, by priority, average resolution hours. `?tz=` (an IANA name such as `Asia/Singapore`) makes "created today" follow that zone's day |
 | GET | `/stats/analytics` | Agent or admin. `?days=` 1 to 365 (default 30) and `?tz=`. Chat analytics, see below |
+| GET | `/admin/kb` and `/kb`, `/kb/info`, `/kb/{source}`, `/kb/test` | **Admin only.** The knowledge base page and its API. PUT and DELETE on `/kb/{source}` change it. See "Knowledge base page (admins only)" |
 | GET | `/health` | App and database status (public) |
 | GET | `/docs` | API docs (public) |
 
@@ -62,7 +63,8 @@ Everyone logs in at `/login`. Three roles exist (`users.role`): `employee`, `age
 |---|---|
 | Logged out | Open `/login` and `/health`. Everything else answers 401, and the pages `/` and `/admin` redirect to `/login` |
 | `employee` | The chat (`/`, `POST /chat`), `POST /tickets` and `POST /actions/confirm`. `/admin`, `GET /tickets`, `PATCH /tickets/{id}` and `GET /stats` answer 403 |
-| `agent`, `admin` | Everything an employee can, plus the dashboard (`/admin`), `GET /tickets`, `PATCH /tickets/{id}` and `GET /stats` |
+| `agent`, `admin` | Everything an employee can, plus the dashboard (`/admin`), `GET /tickets`, `PATCH /tickets/{id}`, `GET /stats` and `GET /stats/analytics` |
+| `admin` only | Everything an agent can, plus the knowledge base page (`/admin/kb`) and its API (`/kb`, `/kb/{source}`, `/kb/test`). Agents and employees get 403 |
 
 Tickets and proposed actions belong to the logged-in user. The chat and admin headers show the name, the role and a Log out button. Chat history in the browser is stored per user id.
 
@@ -104,7 +106,7 @@ Every `POST /chat` is saved, so the history survives a new browser and the dashb
 | Thumbs up or down | `messages.feedback` | -1, 0 or 1, set only by the owner of the conversation |
 | A blocked message | `messages` | Saved as the placeholder `[blocked message]` with `blocked = true`. The raw text is never stored |
 | Tickets | `tickets.conversation_id` | A ticket made from the chat is linked to its conversation |
-| Who did what | `audit_logs` | Logins, ticket status changes, confirmed actions, `conversation_read` (staff reading someone else's chat), `conversation_deleted`, `messages_purged`. Conversation ids and counts only, never text |
+| Who did what | `audit_logs` | Logins, ticket status changes, confirmed actions, `kb_create`, `kb_update` and `kb_delete` (file name only), `conversation_read` (staff reading someone else's chat), `conversation_deleted`, `messages_purged`. Conversation ids and counts only, never text |
 
 **Not stored:** the raw text of blocked messages, the id of a proposed action (it works like a one-time key, so a reloaded chat shows the text of a proposal but not its Confirm card), the match distances (only the confidence), passwords, and anything the redaction replaced.
 
@@ -185,6 +187,37 @@ A question that starts with how, what, why or paano is asked for information, so
 | Worst case | 3 | **3** (classifier, embedding, answer), and 2 for an action. Retries and the fallback model in `llm.py` can add attempts to the embedding and the answer, but never to the classifier or the tool call, which are single attempts |
 
 The rule that decides how often the classifier is needed is measured by `eval_run` ("Decided by the rules").
+
+## Knowledge base page (admins only)
+The articles Orbie answers from are the markdown files in `kb/`. Until now they were indexed only by running `python -m app.ingest`. Admins can now manage them at **`/admin/kb`**, linked from the dashboard header (only admins see the link). **Agents and employees get 403, and a logged-out visitor is sent to the login page.** The same applies to the API below.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/kb` | Every article with title, file, chunk count, `indexed_at` (UTC) and size, and a status: `indexed`, `not_indexed` (a file with no index rows, for example after a `git pull`) or `file_missing` (index rows whose file is gone) |
+| GET | `/kb/info` | The limits and whether changes are allowed on this database (`editable`) |
+| GET | `/kb/{source}` | The markdown of one article |
+| PUT | `/kb/{source}` | Body `{content}`. Creates (201) or updates (200) the article and re-indexes **only that article** |
+| DELETE | `/kb/{source}` | Removes the file and its index rows |
+| POST | `/kb/test` | Body `{question, source?}`. One question through the same search the chat uses. Returns the top chunks with source, distance and a snippet, whether the best one is under the 0.5 limit, and whether the article being edited is among them. **No answer is written.** |
+
+On the page: a list of articles with status badges, a markdown editor with a byte counter, Save and re-index, Delete with a confirmation, and a Test retrieval box with distance bars and the limit marked. It uses the same look as the rest of the app, in dark and light mode, and works on a phone.
+
+**These edits change real files.** `kb/` is a read-write bind mount (`./kb:/kb` in `docker-compose.yml`), so saving an article in the page writes the file in your local `kb/` folder, and deleting removes it. They show up in `git status` like any other edit: a new article is untracked, a change is modified, a delete is deleted. Commit them, or undo them with git, like other changes. The page does not touch git.
+
+**`KB_EDIT_ALLOW_REMOTE` (default `false`).** Saving and deleting change the index tables (`kb_documents` and `kb_chunks`) and the files, so they are refused with a 403 unless the database host is `db` or `localhost`, or `KB_EDIT_ALLOW_REMOTE=true`. Listing, reading and the test box always work. **Only the team lead should switch it on, and only for a shared database such as Supabase.** The reason is that the `kb/` files live in each developer's own checkout while the index is shared: an edit through the page would change the shared index but not anyone else's files, and the next `python -m app.ingest` from another checkout would put the old text back. With the switch off the page shows a read-only banner.
+
+**Rules the server enforces**
+- **File names** are lowercase letters, digits and dashes, ending in `.md` (at most 84 characters), and not a Windows reserved name such as `con` or `nul`. Lowercase only, so two names can never differ just by case on a case-insensitive disk.
+- **Paths:** the resolved path must sit directly inside the KB folder (`KB_DIR`, default `/kb`), a symlink is never followed, and `../` or a slash in a name is refused. Nothing is ever written outside `kb/`.
+- **Size and count:** at most `KB_MAX_BYTES` (default 60000) per article, counted in bytes, and at most `KB_MAX_ARTICLES` (default 200) articles. An obviously huge request is refused before it is read.
+- **Content:** UTF-8 text, line endings and a BOM are cleaned, and the first line must be a `# Title` heading because it becomes the title.
+- **Rate limit:** saving, deleting and testing share `RATE_LIMIT_KB_PER_MIN` (default 20), because each is an embedding call. Reading the list is not limited.
+
+**How a save works.** The article is chunked and embedded first (through `llm.py`, in batches of 50, so a provider failure is the usual clear 503 and **nothing has changed**). Then a temp file is written, the index rows and the audit row are committed in one transaction, and only then the file is moved into place. If the database step fails the temp file is removed and the old article is untouched. A delete removes the index rows first and then the file. Both use the same `ingest.prepare_article` and `ingest.store_article` as the script, so the script and the page index an article identically.
+
+**Audit.** Every create, update and delete writes `kb_create`, `kb_update` or `kb_delete` to `audit_logs` in the same transaction as the change. The actor is `user:<id>` and the payload is the file name only, never the article text.
+
+The page can only be tested here without Gemini. Saving an article makes one embedding call per 50 chunks (usually one call), and the test box makes one.
 
 ## Quick start (Supabase)
 ```bash
@@ -385,7 +418,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: the intent rules (English and Taglish, ambiguity, question forms), the classifier call with a fake model (valid, fenced, invalid, low confidence, failing, single attempt), each route of `/chat`, the follow-up rewrite and the memory, the output checks, the tool-calling path with fake replies, the evaluation's intent and output sections, the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: the knowledge base API and page with a temporary folder, a fake index and a fake embedder (roles, file names, path traversal, the size limit, create and update, failures that change nothing, delete, audit without text, the shared-database switch, the test box), the intent rules (English and Taglish, ambiguity, question forms), the classifier call with a fake model (valid, fenced, invalid, low confidence, failing, single attempt), each route of `/chat`, the follow-up rewrite and the memory, the output checks, the tool-calling path with fake replies, the evaluation's intent and output sections, the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -395,9 +428,9 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `intent.py` (intent rules and classifier), `memory.py` (history and the follow-up rewrite), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `kb.py` (the knowledge base page's logic), `ingest.py` (indexing, shared by the script and the page), `intent.py` (intent rules and classifier), `memory.py` (history and the follow-up rewrite), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
-- `frontend/chat/`, `frontend/admin/` and `frontend/login/`: the three pages (`chat/session.js` is shared by chat and admin)
+- `frontend/chat/`, `frontend/admin/`, `frontend/kb/` and `frontend/login/`: the pages (`chat/session.js` is shared by chat, admin and the knowledge base page)
 - `kb/`: IT knowledge base SOPs (markdown)
 - `docs/`: architecture, prompt taxonomy
 - `tests/`: pytest tests

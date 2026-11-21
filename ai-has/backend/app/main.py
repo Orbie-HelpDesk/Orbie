@@ -10,11 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import analytics, audit, chatlog, llm, memory, proposals
+from . import analytics, audit, chatlog, kb, llm, memory, proposals
 from .auth import (
     STAFF,
     authenticate,
     current_user,
+    require_admin,
     require_staff,
     safe_next,
     user_from_request,
@@ -25,7 +26,7 @@ from .guardrails import check_input, redact_pii
 from .intent import ACTION_INTENTS, OUT_OF_SCOPE, UNKNOWN, classify
 from .passwords import MAX_PASSWORD_LENGTH
 from .rag import answer, propose_action
-from .ratelimit import limit_actions, limit_chat, limit_tickets
+from .ratelimit import limit_actions, limit_chat, limit_kb, limit_tickets
 from .sessions import COOKIE_NAME, create_token, lifetime_seconds, secret_ok
 from .tickets import create_ticket, get_stats, list_tickets, update_status
 from .timeutil import check_timezone
@@ -84,6 +85,12 @@ async def security_headers_and_safe_errors(request: Request, call_next):
     return response
 
 
+@app.exception_handler(kb.KbError)
+async def kb_error(request: Request, exc: kb.KbError):
+    """A knowledge base request that cannot be done, with a message that is safe to show."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+
 @app.exception_handler(llm.ProviderUnavailable)
 async def ai_provider_unavailable(request: Request, exc: llm.ProviderUnavailable):
     """The AI provider failed after its retries. A fixed message and a Retry-After, nothing from the error."""
@@ -107,6 +114,7 @@ class NoCacheStaticFiles(StaticFiles):
 FRONTEND_DIR = Path("/frontend")
 CHAT_DIR = FRONTEND_DIR / "chat"
 ADMIN_DIR = FRONTEND_DIR / "admin"
+KB_PAGE_DIR = FRONTEND_DIR / "kb"
 LOGIN_DIR = FRONTEND_DIR / "login"
 
 # Chat page files: /static/styles.css, /static/app.js, /static/field.js
@@ -114,6 +122,9 @@ app.mount("/static", NoCacheStaticFiles(directory=CHAT_DIR, check_dir=False), na
 
 # Admin page files: /admin-assets/admin.css, /admin-assets/admin.js
 app.mount("/admin-assets", NoCacheStaticFiles(directory=ADMIN_DIR, check_dir=False), name="admin-assets")
+
+# Knowledge base page files: /kb-assets/kb.css, /kb-assets/kb.js
+app.mount("/kb-assets", NoCacheStaticFiles(directory=KB_PAGE_DIR, check_dir=False), name="kb-assets")
 
 # Login page files: /login-assets/login.css, /login-assets/login.js
 app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=False), name="login-assets")
@@ -158,6 +169,12 @@ FORBIDDEN_PAGE = """<!doctype html>
 </body></html>"""
 
 
+FORBIDDEN_KB_PAGE = FORBIDDEN_PAGE.replace(
+    "The dashboard is for agents and admins. Your account does not have that role.",
+    "The knowledge base page is for admins only. Your account does not have that role.",
+).replace("<p><a href=\"/\">Back to the chat</a></p>", "<p><a href=\"/admin\">Back to the dashboard</a> or <a href=\"/\">the chat</a></p>")
+
+
 def _to_login(path: str) -> RedirectResponse:
     target = "/login" if path == "/" else f"/login?next={path}"
     return RedirectResponse(target, status_code=302, headers=NO_CACHE)
@@ -178,6 +195,17 @@ def admin(request: Request):
     if user["role"] not in STAFF:
         return HTMLResponse(FORBIDDEN_PAGE, status_code=403, headers=NO_CACHE)
     return FileResponse(ADMIN_DIR / "admin.html", headers=NO_CACHE)
+
+
+@app.get("/admin/kb")
+def kb_page(request: Request):
+    """The knowledge base page. Admins only: an agent or an employee gets the 403 page."""
+    user = user_from_request(request)
+    if user is None:
+        return _to_login("/admin/kb")
+    if user["role"] != "admin":
+        return HTMLResponse(FORBIDDEN_KB_PAGE, status_code=403, headers=NO_CACHE)
+    return FileResponse(KB_PAGE_DIR / "kb.html", headers=NO_CACHE)
 
 
 @app.get("/login")
@@ -520,3 +548,56 @@ def rate_message(message_id: int, req: FeedbackRequest, user: dict = Depends(cur
     if not chatlog.set_feedback(message_id, user["id"], req.value):
         raise HTTPException(status_code=404, detail="Message not found.")
     return {"message_id": message_id, "feedback": req.value}
+
+
+# ---------- Knowledge base management (admin only) ----------
+class KbSave(BaseModel):
+    content: str
+
+
+class KbTest(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
+    source: str | None = Field(default=None, max_length=100)  # the article being edited, to highlight its chunks
+
+
+def kb_body_size(request: Request) -> None:
+    """Refuses an obviously too large body before it is read. The exact byte limit is checked in kb.py."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > settings.kb_max_bytes * 6 + 4096:
+        raise HTTPException(status_code=413, detail=f"The article is too long. The limit is {settings.kb_max_bytes} bytes.")
+
+
+@app.get("/kb")
+def kb_list(admin: dict = Depends(require_admin)):
+    return kb.list_articles()
+
+
+@app.get("/kb/info")
+def kb_info(admin: dict = Depends(require_admin)):
+    """The limits, and whether changes are allowed on this database. For the page."""
+    return kb.info()
+
+
+@app.post("/kb/test", dependencies=[Depends(limit_kb)])
+def kb_test(req: KbTest, admin: dict = Depends(require_admin)):
+    """One question through the chat's search, to see which chunks and distances come back. No answer call."""
+    return kb.try_retrieval(req.question.strip(), req.source)
+
+
+@app.get("/kb/{source}")
+def kb_read(source: str, admin: dict = Depends(require_admin)):
+    return kb.read_article(source)
+
+
+@app.put("/kb/{source}", dependencies=[Depends(limit_kb), Depends(kb_body_size)])
+def kb_save(source: str, req: KbSave, response: Response, admin: dict = Depends(require_admin)):
+    """Creates or updates an article from markdown and re-indexes only that article."""
+    result = kb.save_article(source, req.content, audit.actor_for(admin["id"]))
+    if result["created"]:
+        response.status_code = 201
+    return result
+
+
+@app.delete("/kb/{source}", dependencies=[Depends(limit_kb)])
+def kb_delete(source: str, admin: dict = Depends(require_admin)):
+    return kb.delete_article(source, audit.actor_for(admin["id"]))

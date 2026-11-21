@@ -80,3 +80,4 @@ limit_chat = rate_limit("chat", "rate_limit_chat_per_min")
 limit_tickets = rate_limit("tickets", "rate_limit_tickets_per_min")
 
 limit_actions = rate_limit("actions", "rate_limit_actions_per_min")
+limit_kb = rate_limit("kb", "rate_limit_kb_per_min")

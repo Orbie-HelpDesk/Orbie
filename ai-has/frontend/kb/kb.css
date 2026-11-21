@@ -1,0 +1,142 @@
+/* Loaded after the chat styles.css and the dashboard admin.css, so colours, fonts, panels, buttons
+   and the theme are shared. */
+
+.kb-banner {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 122, 89, 0.12);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.kb-banner[hidden] { display: none; }
+
+.kb-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  grid-template-areas: "list editor" "test test";
+  gap: 18px;
+  align-items: start;
+}
+.kb-list-panel { grid-area: list; }
+.kb-editor-panel { grid-area: editor; }
+.kb-test-panel { grid-area: test; }
+
+.kb-count { font-weight: 500; font-size: 13px; color: var(--muted); }
+
+/* ---------- Article list ---------- */
+.kb-list { display: grid; gap: 8px; max-height: 560px; overflow-y: auto; }
+.kb-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(127, 127, 160, 0.06);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s, background 0.2s;
+}
+.kb-item:hover { transform: translateY(-2px); border-color: var(--a1); }
+.kb-item.active { border-color: var(--a1); background: rgba(108, 92, 231, 0.14); }
+.kb-item b { font-size: 14px; overflow-wrap: anywhere; }
+.kb-item small { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+.tag.indexed { background: rgba(47, 184, 111, 0.16); color: var(--green); }
+.tag.not_indexed { background: rgba(255, 122, 89, 0.16); color: var(--a2); }
+.tag.file_missing { background: rgba(229, 72, 77, 0.16); color: var(--red); }
+.tag.new { background: rgba(108, 92, 231, 0.16); color: var(--a1); }
+
+/* ---------- Editor ---------- */
+.kb-label { display: block; margin: 10px 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.kb-input, .kb-text {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(127, 127, 160, 0.07);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.kb-input { height: 42px; padding: 0 14px; }
+.kb-input:read-only { opacity: 0.7; }
+.kb-text {
+  padding: 12px 14px;
+  min-height: 320px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.kb-input:focus, .kb-text:focus { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.2); }
+.kb-hint { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.kb-meter { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+.kb-meter .over { color: var(--red); font-weight: 600; }
+#dirty { color: var(--a2); font-weight: 600; }
+
+.kb-message { min-height: 20px; margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+.kb-message.ok { color: var(--green); }
+.kb-message.error { color: var(--red); }
+
+.kb-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.kb-save { margin-top: 0; }
+.kb-save:disabled { opacity: 0.6; background: linear-gradient(135deg, var(--a1), var(--a2)); }
+.kb-delete {
+  padding: 10px 16px;
+  border: 1px solid var(--red);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--red);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.2s;
+}
+.kb-delete:hover:not(:disabled) { transform: translateY(-2px); background: rgba(229, 72, 77, 0.12); }
+.kb-delete.solid { background: var(--red); color: #fff; }
+.kb-delete.solid:hover:not(:disabled) { background: var(--red); filter: brightness(1.08); }
+.kb-delete:disabled { opacity: 0.5; cursor: default; }
+
+.kb-confirm {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--red);
+  border-radius: 14px;
+  background: rgba(229, 72, 77, 0.08);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.kb-confirm[hidden] { display: none; }
+.kb-confirm b { overflow-wrap: anywhere; }
+
+/* ---------- Test retrieval ---------- */
+.kb-test-form { display: flex; gap: 10px; margin-top: 10px; }
+.kb-test-form .kb-input { flex: 1; }
+.kb-summary { margin: 14px 0 10px; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.5; border: 1px solid var(--line); }
+.kb-summary.good { background: rgba(47, 184, 111, 0.12); }
+.kb-summary.bad { background: rgba(229, 72, 77, 0.1); }
+
+.kb-results { display: grid; gap: 10px; }
+.kb-chunk { padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: rgba(127, 127, 160, 0.06); }
+.kb-chunk.mine { border-color: var(--a1); background: rgba(108, 92, 231, 0.12); }
+.kb-chunk-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+.kb-chunk-head b { overflow-wrap: anywhere; }
+.kb-chunk-head span { color: var(--muted); font-size: 12.5px; }
+.kb-bar { position: relative; height: 8px; margin: 8px 0; border-radius: 99px; background: var(--line); }
+.kb-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--a1), var(--a2)); }
+.kb-bar.far i { background: var(--red); }
+.kb-bar u { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); opacity: 0.55; }
+.kb-snippet { font-size: 13px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; }
+
+@media (max-width: 860px) {
+  .kb-grid { grid-template-columns: 1fr; grid-template-areas: "list" "editor" "test"; }
+  .kb-list { max-height: 260px; }
+  .kb-test-form { flex-direction: column; }
+}
