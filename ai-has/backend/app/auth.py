@@ -1,5 +1,5 @@
 """Login, the current user and role checks."""
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy import text
 
 from . import audit
@@ -12,6 +12,15 @@ ROLES = {"employee", "agent", "admin"}
 STAFF = ("agent", "admin")
 BAD_LOGIN_MESSAGE = "Incorrect email or password."
 TOO_MANY_LOGINS_MESSAGE = "Too many failed logins. Please wait a few minutes and try again."
+
+
+def safe_next(value: str | None, default: str = "/") -> str:
+    """A local path to go to after login. Anything that could leave this site becomes the default."""
+    if not value or not value.startswith("/") or value.startswith("//") or "\\" in value:
+        return default
+    if any(ord(ch) < 32 for ch in value):
+        return default
+    return value
 
 
 def public_user(row) -> dict:
@@ -57,8 +66,7 @@ def current_user(request: Request) -> dict:
 def require_roles(*roles: str):
     """Dependency factory: a logged-in user whose role is one of `roles`, else 401 or 403."""
 
-    def dependency(request: Request) -> dict:
-        user = current_user(request)
+    def dependency(user: dict = Depends(current_user)) -> dict:
         if user["role"] not in roles:
             raise HTTPException(status_code=403, detail="You do not have access to this.")
         return user

@@ -24,6 +24,8 @@ def test_chat_and_admin_pages_must_be_revalidated(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "CHAT_DIR", chat)
     monkeypatch.setattr(main, "ADMIN_DIR", admin)
 
+    staff = {"id": 2, "email": "agent@example.com", "name": "Agent", "role": "agent"}
+    monkeypatch.setattr(main, "user_from_request", lambda request: staff)
     client = TestClient(main.app)
     for path in ("/", "/admin"):
         res = client.get(path)

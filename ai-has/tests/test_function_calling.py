@@ -100,9 +100,10 @@ def test_an_endpoint_error_falls_back_to_the_rule(monkeypatch):
 
 # ---------- /chat ----------
 @pytest.fixture
-def chat(monkeypatch):
+def chat(monkeypatch, login_as):
     """/chat with a fake model step, a fake store and a trap on the real actions."""
     state = {"stored": [], "answered": [], "proposed_for": []}
+    login_as("employee")
 
     def boom(*args, **kwargs):
         raise AssertionError("an action ran without confirmation")
@@ -132,7 +133,7 @@ def test_chat_returns_a_proposal_and_runs_nothing(chat):
     assert body["proposed_action"]["name"] == "request_password_reset"
     assert body["answer"] == main.ACTION_MESSAGE
     assert chat["answered"] == []  # the proposal replaces the knowledge base answer
-    assert chat["stored"] == [("employee@company.com", "request_password_reset", {})]
+    assert chat["stored"] == [("employee@example.com", "request_password_reset", {})]
 
 
 def test_chat_without_a_proposal_answers_normally(chat):
