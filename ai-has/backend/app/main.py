@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import analytics, audit, chatlog, proposals
+from . import analytics, audit, chatlog, llm, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -81,6 +81,16 @@ async def security_headers_and_safe_errors(request: Request, call_next):
     for name, value in SECURITY_HEADERS.items():
         response.headers[name] = value
     return response
+
+
+@app.exception_handler(llm.ProviderUnavailable)
+async def ai_provider_unavailable(request: Request, exc: llm.ProviderUnavailable):
+    """The AI provider failed after its retries. A fixed message and a Retry-After, nothing from the error."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": llm.BUSY_MESSAGE},
+        headers={"Retry-After": str(llm.RETRY_AFTER_SECONDS)},
+    )
 
 
 # Browsers must revalidate pages and scripts, so a rebuilt frontend is never hidden by an old cached copy

@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     embed_model: str = "gemini-embedding-001"
     embed_dimensions: int = 768
     database_url: str = ""
+    chat_timeout_seconds: float = 30.0  # one chat attempt. A slow model may need more
+    embed_timeout_seconds: float = 20.0  # one embedding attempt
+    llm_call_budget_seconds: float = 45.0  # all attempts of one logical call, retries included
     n8n_webhook_url: str = "http://localhost:5678/webhook"
     n8n_webhook_secret: str = ""
     n8n_timeout_seconds: float = 5.0

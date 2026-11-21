@@ -5,7 +5,7 @@ import time
 
 from sqlalchemy import text
 
-from .config import settings
+from . import llm
 from .db import engine
 from .ingest import client, embed
 
@@ -131,8 +131,8 @@ def answer(question: str, chunks: list[dict] | None = None) -> dict:
 
     chunks = select_chunks(chunks)
     context = build_context(chunks)
-    res = client.chat.completions.create(
-        model=settings.chat_model,
+    res = llm.chat(
+        client,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {question}"},
@@ -246,16 +246,17 @@ def propose_action(question: str) -> dict | None:
     if not ACTION_HINT.search(question):
         return None
     try:
-        res = client.chat.completions.create(
-            model=settings.chat_model,
+        res = llm.chat(
+            client,
             messages=[
                 {"role": "system", "content": ACTION_PROMPT},
                 {"role": "user", "content": question},
             ],
             tools=TOOLS,
         )
-    except Exception:
-        logger.warning("Tool calling failed, using the rule-based trigger", exc_info=True)
+    except Exception as exc:
+        # Only the error type is logged: an error text can hold the provider's response body
+        logger.warning("Tool calling failed (%s), using the rule-based trigger", type(exc).__name__)
         return rule_based_proposal(question)
 
     message = res.choices[0].message

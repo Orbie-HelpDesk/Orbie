@@ -4,11 +4,18 @@ from pathlib import Path
 from openai import OpenAI
 from sqlalchemy import text
 
+from . import llm
 from .config import settings
 from .db import engine
 from .safety import require_local_db
 
-client = OpenAI(api_key=settings.gemini_api_key, base_url=settings.llm_base_url)
+# max_retries=0: retrying (with a limit on the total time) is done in llm.py, not hidden inside the SDK
+client = OpenAI(
+    api_key=settings.gemini_api_key,
+    base_url=settings.llm_base_url,
+    timeout=settings.chat_timeout_seconds,
+    max_retries=0,
+)
 KB_DIR = Path("/kb")
 
 
@@ -28,11 +35,7 @@ def chunk_text(content: str, max_chars: int = 800) -> list[str]:
 
 
 def embed(texts: list[str]) -> list[list[float]]:
-    res = client.embeddings.create(
-        model=settings.embed_model,
-        input=texts,
-        dimensions=settings.embed_dimensions,
-    )
+    res = llm.embeddings(client, input=texts, dimensions=settings.embed_dimensions)
     return [d.embedding for d in res.data]
 
 
