@@ -27,6 +27,7 @@ from .rag import answer, propose_action
 from .ratelimit import limit_actions, limit_chat, limit_tickets
 from .sessions import COOKIE_NAME, create_token, lifetime_seconds, secret_ok
 from .tickets import create_ticket, get_stats, list_tickets, update_status
+from .timeutil import check_timezone
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
 
@@ -209,15 +210,23 @@ def me(response: Response, user: dict = Depends(current_user)):
     return user
 
 
+def time_zone(tz: str | None = Query(None, max_length=64)) -> str:
+    """The ?tz= name (for example Asia/Singapore), checked against the database. UTC if absent."""
+    try:
+        return check_timezone(tz)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Unknown time zone.")
+
+
 @app.get("/stats", dependencies=[Depends(require_staff)])
-def stats():
-    return get_stats()
+def stats(tz: str = Depends(time_zone)):
+    return get_stats(tz)
 
 
 @app.get("/stats/analytics", dependencies=[Depends(require_staff)])
-def stats_analytics(days: int = Query(30, ge=1, le=365)):
+def stats_analytics(days: int = Query(30, ge=1, le=365), tz: str = Depends(time_zone)):
     """Questions per day, deflection, latency, thumbs, top articles and top escalated questions."""
-    return analytics.compute(days)
+    return analytics.compute(days, tz)
 
 
 @app.get("/health")

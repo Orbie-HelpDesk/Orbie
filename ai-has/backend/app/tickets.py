@@ -147,7 +147,8 @@ def update_status(ticket_id: int, status: str, actor: str | None = None) -> dict
     }
 
 
-def get_stats() -> dict:
+def get_stats(tz: str = "UTC") -> dict:
+    """Ticket numbers. "Created today" is the day that is running in the time zone `tz`."""
     with engine.connect() as conn:
         totals = conn.execute(
             text(
@@ -156,11 +157,13 @@ def get_stats() -> dict:
                 "count(*) filter (where status = 'open') as open, "
                 "count(*) filter (where status = 'in_progress') as in_progress, "
                 "count(*) filter (where status = 'resolved') as resolved, "
-                "count(*) filter (where created_at >= date_trunc('day', now())) as today, "
+                "count(*) filter (where created_at >= "
+                "  ((date_trunc('day', now() at time zone :tz) at time zone :tz) at time zone 'UTC')) as today, "
                 "avg(extract(epoch from (resolved_at - created_at)) / 3600) "
                 "  filter (where status = 'resolved') as avg_hours "
                 "from tickets"
-            )
+            ),
+            {"tz": tz},
         ).mappings().one()
 
         prio_rows = conn.execute(

@@ -90,7 +90,7 @@ class FakeEngine:
     def execute(self, stmt, params):
         sql = str(stmt)
         self.calls.append((sql, params))
-        if "current_date" in sql:
+        if "as today" in sql:
             return Rows([TOTALS])
         if "json_array_elements_text" in sql:
             return Rows([{"source": "vpn.md", "n": 2}])
@@ -120,7 +120,7 @@ def test_the_queries_never_ask_for_a_user_or_a_name():
 @pytest.fixture
 def client(monkeypatch):
     seen = []
-    monkeypatch.setattr(analytics, "compute", lambda days: seen.append(days) or {"days": days})
+    monkeypatch.setattr(analytics, "compute", lambda days, tz="UTC": seen.append((days, tz)) or {"days": days, "tz": tz})
     c = TestClient(main.app)
     c.seen = seen
     return c
@@ -139,7 +139,7 @@ def test_logged_out_gets_401(client):
 
 def test_the_period_defaults_to_30_days_and_is_validated(client, login_as):
     login_as("admin")
-    assert client.get("/stats/analytics").json() == {"days": 30}
-    assert client.get("/stats/analytics?days=90").json() == {"days": 90}
+    assert client.get("/stats/analytics").json() == {"days": 30, "tz": "UTC"}
+    assert client.get("/stats/analytics?days=90").json() == {"days": 90, "tz": "UTC"}
     for bad in ("0", "366", "-5", "abc"):
         assert client.get(f"/stats/analytics?days={bad}").status_code == 422
