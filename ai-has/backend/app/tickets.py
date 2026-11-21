@@ -64,6 +64,15 @@ def create_ticket(
     }
 
 
+def set_external_ref(ticket_id: int, external_ref: str) -> None:
+    """Saves the key the Jira-style system gave to this ticket."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("update tickets set external_ref = :r where id = :id"),
+            {"r": external_ref, "id": ticket_id},
+        )
+
+
 def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
     sql = (
         "select t.id, t.summary, t.priority, t.status, t.source, "

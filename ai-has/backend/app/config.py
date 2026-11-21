@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     embed_dimensions: int = 768
     database_url: str = ""
     n8n_webhook_url: str = "http://localhost:5678/webhook"
+    n8n_webhook_secret: str = ""
+    n8n_timeout_seconds: float = 5.0
     rate_limit_enabled: bool = True
     rate_limit_chat_per_min: int = 20
     rate_limit_tickets_per_min: int = 10
