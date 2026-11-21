@@ -56,6 +56,7 @@ flowchart LR
 | Chat history | `chatlog.py` | Saves each exchange (redacted text, citations, confidence, latency, intent, outcome, flags), lists, reads and deletes conversations, stores thumbs. Failures never stop an answer |
 | Analytics | `analytics.py`, `GET /stats/analytics` | Questions per day, deflection rate, median and p95 latency, thumbs share, top cited articles, most escalated questions. Staff only |
 | Knowledge base page | `kb.py`, `ingest.py`, HTML, CSS, JS in `frontend/kb/` | Admin-only list, markdown editor, save with re-index of one article, delete and a retrieval test box. The script and the page share `ingest.prepare_article` and `ingest.store_article`. Changes need a local database unless `KB_EDIT_ALLOW_REMOTE` is true |
+| Audit log page | `auditview.py`, `GET /audit`, HTML, CSS, JS in `frontend/audit/` | Admin-only, newest first, 50 per page (at most 100), filtered by action, actor text and date range. Shows only checked fields and a whitelist-built summary, never a payload, an email or text. Every read writes `audit_viewed` in the same transaction |
 | Demo data | `seed_demo.py` | Fills the local database with synthetic tickets, conversations and ratings for screenshots and the defense. Local database only, with no override option. `--reset` (typed confirmation) clears the demo tables but never users or the knowledge base. Marked in `audit_logs` as `demo_seeded`. Not real usage |
 | Retention | `purge_old.py` | Replaces old message text and conversation titles with `[purged]`, keeps the numbers. Local database unless `--allow-remote` |
 | Audit | `audit.py` | One place that writes `audit_logs` rows without personal data |
@@ -94,6 +95,14 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 4. Pages: a logged-out `/` or `/admin` redirects to `/login` (the `next` value must be a local path), and an employee opening `/admin` gets a 403 page.
 5. A middleware rejects any POST, PATCH or DELETE that is not JSON (415) or that carries a foreign `Origin` (403). Together with `SameSite=Lax` and no CORS, this blocks simple cross-site form posts.
 6. Logout clears the cookie and writes a `logout` row. The token is stateless, so a copy stays valid until it expires.
+
+## Request flow: audit log page
+1. `/admin/audit` and `GET /audit` need the `admin` role: 401 when logged out (the page redirects to the login), 403 for an agent or an employee. The role check runs first, so a refused user never reaches a query and learns nothing about the validation rules.
+2. The query is checked: page 1 to 2000, page size 1 to 100 (default 50), an `action` of lowercase letters and underscores, an `actor` of at most 80 characters, dates and a time zone that exists in `pg_timezone_names`. A value outside the rules is a 422.
+3. The statement is built from fixed SQL pieces, newest first with `limit page_size + 1` and an `offset`, and every request value is a bound parameter. The `actor` text has `%`, `_` and `\` escaped, so it matches literally.
+4. In one transaction the page of rows is read and an `audit_viewed` row is written (actor only, an empty payload, never the filters). If the write fails the transaction rolls back and nothing is returned.
+5. Each row becomes `{id, time, actor, action, summary}`: the actor only if it is one of ours (otherwise "(hidden)"), and a summary built from a per-action whitelist of checked values. The payload is never sent.
+6. The page shows the time in the viewer's local time, with the exact UTC time on hover, and a Newer and Older pager from `has_next`.
 
 ## Request flow: knowledge base page
 1. `/admin/kb` and every `/kb` route need the `admin` role: 401 when logged out (the page redirects to the login), 403 for an agent or an employee.
