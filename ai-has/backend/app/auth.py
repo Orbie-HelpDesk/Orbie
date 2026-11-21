@@ -75,6 +75,7 @@ def require_roles(*roles: str):
 
 
 require_staff = require_roles(*STAFF)
+require_admin = require_roles("admin")
 
 
 def authenticate(email: str, password: str, ip: str) -> dict:
