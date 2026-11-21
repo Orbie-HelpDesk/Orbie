@@ -123,6 +123,37 @@ It sends `-n` requests to `POST /chat` with `-c` concurrent workers and reports 
 
 The modes that spend quota refuse to run without `--yes`. The result is written as a marked "Load test" section of `report.md`, and `eval_run` keeps that section when it rewrites the report (`--no-report` skips it).
 
+## n8n workflows (mock Jira and Active Directory)
+Two workflows in `n8n/` back the actions the assistant can propose. Nothing real is called: the ticket workflow returns a made-up Jira key (`HELP-1234`) and the password workflow returns `{"status": "reset_link_sent"}`. No email is sent.
+
+| File | Webhook path | Receives | Returns |
+|---|---|---|---|
+| `n8n/create-ticket.json` | `/webhook/create-ticket` | `{summary, priority, user_email}` | `{"key": "HELP-<number>"}` |
+| `n8n/password-reset.json` | `/webhook/password-reset` | `{user_email}` | `{"status": "reset_link_sent"}` |
+
+n8n is optional and only starts with its compose profile. It is published on `127.0.0.1:5678` only, so it is not reachable from other machines.
+
+```bash
+docker compose --profile n8n up -d n8n
+```
+1. Open http://localhost:5678 and create the local owner account (first start only).
+2. Import: **Workflows > Add workflow > the ... menu > Import from file**, and pick `n8n/create-ticket.json`. Repeat for `n8n/password-reset.json`. (The `./n8n` folder is also mounted read-only at `/workflows` in the container.)
+3. Open each workflow and switch **Active** on. Only active workflows answer the production URL `/webhook/...`.
+4. Check it from your machine (the optional secret header is only needed if you set `N8N_WEBHOOK_SECRET`):
+   ```bash
+   curl -X POST http://localhost:5678/webhook/create-ticket -H "Content-Type: application/json" -d '{"summary":"Test","priority":"low","user_email":"a@b.com"}'
+   ```
+
+**Backend URL.** Inside the backend container `localhost` is the container itself, so use the compose service name: `N8N_WEBHOOK_URL=http://n8n:5678/webhook` (already in `.env.example`). The default in `config.py`, `http://localhost:5678/webhook`, is only right when the backend runs outside Docker.
+
+**Settings** (names and placeholder values are in `.env.example`; never commit real values):
+- `N8N_WEBHOOK_URL`: base URL of the webhooks.
+- `N8N_WEBHOOK_SECRET`: optional. When set, the backend sends it in the `X-Webhook-Secret` header and both workflows answer 401 to any request without it. Set the same value for the `n8n` service and the backend (both read it from `.env`). Empty means no check.
+- `N8N_ENCRYPTION_KEY`: optional key n8n uses for its stored credentials.
+- `N8N_IMAGE_TAG`: optional n8n image version (default `1.70.3`).
+
+Workflow data lives in the `n8ndata` volume. Re-export a changed workflow from the n8n editor (**...** menu > **Download**) into `n8n/`.
+
 ## Tests
 No Gemini calls and no real database are needed. Tests stub the database engine.
 
@@ -150,7 +181,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker buil
 - `kb/`: IT knowledge base SOPs (markdown)
 - `docs/`: architecture, prompt taxonomy
 - `tests/`: pytest tests
-- `n8n/`: empty, reserved for exported workflows
+- `n8n/`: exported workflows (mock Jira ticket, mock password reset)
 
 ## Not built yet
 - n8n automation and mock Jira or Active Directory actions
