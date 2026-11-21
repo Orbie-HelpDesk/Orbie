@@ -14,7 +14,8 @@ const footEl = $("historyFoot");
 const clearBtn = $("clearHistory");
 const mainOrbs = [$("headOrb"), $("heroOrb")];
 
-const STORE_KEY = "aihas.chats";
+// History is kept per user, so two people on one browser never see each other's chats
+const STORE_KEY = "aihas.chats." + (window.aihasUser ? window.aihasUser.id : "anon");
 
 const EYES =
   '<div class="eyes"><i class="eye"><b class="pupil"></b></i><i class="eye"><b class="pupil"></b></i></div>';

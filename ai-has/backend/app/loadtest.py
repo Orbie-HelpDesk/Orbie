@@ -2,7 +2,7 @@
 
     python -m app.loadtest                                  # mock mode: no Gemini, no database
     python -m app.loadtest --mode retrieval-only -n 50 -c 5 --yes
-    python -m app.loadtest --mode full --url http://localhost:8000 -n 30 -c 3 --yes
+    LOADTEST_PASSWORD=... python -m app.loadtest --mode full --url http://localhost:8000 --user EMAIL -n 30 -c 3 --yes
 
 Modes (the first lines of the output always say which one ran):
   mock            runs the app in-process with the answer step replaced by a stub. No Gemini calls and
@@ -11,7 +11,8 @@ Modes (the first lines of the output always say which one ran):
                   model. Spends one embedding call per request. Needs DATABASE_URL.
   full            sends real requests to a running server (--url). Spends one embedding call and up to
                   one chat call per request. Start the server with RATE_LIMIT_ENABLED=false, or the
-                  rate limit will answer 429 (counted separately below).
+                  rate limit will answer 429 (counted separately below). Needs a login: --user EMAIL
+                  and the password in the LOADTEST_PASSWORD environment variable.
 
 In-process modes switch the rate limit off, because the test would otherwise measure the limiter.
 Modes that spend Gemini quota refuse to run without --yes.
@@ -20,6 +21,7 @@ import argparse
 import asyncio
 import datetime
 import json
+import os
 import statistics
 import time
 from pathlib import Path
@@ -31,6 +33,8 @@ from .eval_metrics import percentile, replace_section
 DATA = Path(__file__).parent / "eval_data"
 DEFAULT_REPORT = DATA / "report.md"
 MODES = ("mock", "retrieval-only", "full")
+# Who the in-process modes act as. It never touches the database.
+LOADTEST_USER = {"id": 0, "email": "loadtest@example.com", "name": "Load test", "role": "employee"}
 
 
 def load_questions(which: str = "all") -> list[str]:
@@ -174,21 +178,31 @@ def _retrieval_only_answer():
 async def run_in_process(mode: str, plan: list[str], concurrency: int, mock_latency_ms: float):
     """Run the real app through an ASGI transport, with the answer step replaced."""
     from . import main as app_main
+    from .auth import current_user
     from .config import settings
 
-    saved = (app_main.answer, settings.rate_limit_enabled)
+    saved = (app_main.answer, app_main.propose_action, settings.rate_limit_enabled)
     app_main.answer = _stub_answer(mock_latency_ms) if mode == "mock" else _retrieval_only_answer()
+    # Both in-process modes promise no chat model call, so the action step is off too.
+    app_main.propose_action = lambda question: None
     settings.rate_limit_enabled = False
+    # The route needs a logged-in user. Here it is a fixed one, so no database is used.
+    app_main.app.dependency_overrides[current_user] = lambda: LOADTEST_USER
     try:
         transport = httpx.ASGITransport(app=app_main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://loadtest", timeout=120) as client:
             return await run_requests(client, plan, concurrency)
     finally:
-        app_main.answer, settings.rate_limit_enabled = saved
+        app_main.answer, app_main.propose_action, settings.rate_limit_enabled = saved
+        app_main.app.dependency_overrides.pop(current_user, None)
 
 
-async def run_full(url: str, plan: list[str], concurrency: int, timeout: float):
+async def run_full(url: str, plan: list[str], concurrency: int, timeout: float, user: str, password: str):
+    """Logs in once (the client keeps the session cookie), then sends the requests."""
     async with httpx.AsyncClient(base_url=url, timeout=timeout) as client:
+        res = await client.post("/auth/login", json={"email": user, "password": password})
+        if res.status_code != 200:
+            raise SystemExit(f"Login failed with status {res.status_code}. Check --user and LOADTEST_PASSWORD.")
         return await run_requests(client, plan, concurrency)
 
 
@@ -201,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set", choices=["generated", "hard", "all"], default="all", dest="which")
     p.add_argument("--mock-latency-ms", type=float, default=0.0, help="fake answer delay in mock mode")
     p.add_argument("--timeout", type=float, default=120.0, help="seconds per request in full mode")
+    p.add_argument("--user", help="email to log in with in full mode (the password comes from LOADTEST_PASSWORD)")
     p.add_argument("--yes", action="store_true", help="confirm that Gemini quota may be spent")
     p.add_argument("--no-report", action="store_true", help="do not write the load test section of the report")
     p.add_argument("--report", type=Path, default=DEFAULT_REPORT)
@@ -216,9 +231,16 @@ def main(argv: list[str] | None = None) -> int:
         print("Nothing was sent. Add --yes to confirm that Gemini quota may be spent.")
         return 2
 
+    password = os.environ.get("LOADTEST_PASSWORD", "")
+    if args.mode == "full" and not (args.user and password):
+        print("Full mode needs a login now: pass --user EMAIL and set the LOADTEST_PASSWORD environment variable.")
+        return 2
+
     plan = build_plan(args.requests, load_questions(args.which))
     if args.mode == "full":
-        results, duration = asyncio.run(run_full(args.url, plan, args.concurrency, args.timeout))
+        results, duration = asyncio.run(
+            run_full(args.url, plan, args.concurrency, args.timeout, args.user, password)
+        )
     else:
         results, duration = asyncio.run(run_in_process(args.mode, plan, args.concurrency, args.mock_latency_ms))
 

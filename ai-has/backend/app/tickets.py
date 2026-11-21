@@ -2,6 +2,7 @@ import logging
 
 from sqlalchemy import text
 
+from . import audit
 from .db import engine
 
 PRIORITIES = {"low", "medium", "high"}
@@ -113,11 +114,17 @@ def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
     ]
 
 
-def update_status(ticket_id: int, status: str) -> dict | None:
+def update_status(ticket_id: int, status: str, actor: str | None = None) -> dict | None:
+    """Changes a ticket status. With an actor, the change is audited in the same transaction."""
     if status not in STATUSES:
         raise ValueError(f"Status must be one of: {', '.join(sorted(STATUSES))}")
 
     with engine.begin() as conn:
+        old = conn.execute(
+            text("select status from tickets where id = :id for update"), {"id": ticket_id}
+        ).scalar()
+        if old is None:
+            return None
         row = conn.execute(
             text(
                 "update tickets set status = :s, "
@@ -126,6 +133,8 @@ def update_status(ticket_id: int, status: str) -> dict | None:
             ),
             {"s": status, "id": ticket_id},
         ).mappings().first()
+        if actor is not None:
+            audit.record(actor, "ticket_status_change", {"ticket_id": ticket_id, "from": old, "to": status}, conn=conn)
 
     if row is None:
         return None

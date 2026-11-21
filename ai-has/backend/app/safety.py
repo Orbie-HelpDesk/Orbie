@@ -28,6 +28,12 @@ def _hosts(database_url: str) -> list[str | None]:
     return hosts
 
 
+def is_local_db(database_url: str) -> bool:
+    """True only if every host in the URL is local. Ignores the --allow-remote flag."""
+    hosts = _hosts(database_url)
+    return bool(hosts) and all(h in LOCAL_HOSTS for h in hosts)
+
+
 def require_local_db(database_url: str, argv: list[str] | None = None) -> None:
     """Exit with a clear message unless every database host is local, or --allow-remote is given.
 

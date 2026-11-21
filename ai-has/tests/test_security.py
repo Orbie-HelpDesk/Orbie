@@ -23,8 +23,10 @@ class FakeEngine:
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
+def setup(monkeypatch, login_as):
     monkeypatch.setattr(main, "engine", FakeEngine())
+    user = login_as("agent")
+    monkeypatch.setattr(main, "user_from_request", lambda request: user)
     monkeypatch.setattr(settings, "rate_limit_enabled", True)
     ratelimit.limiter.reset()
     yield
@@ -92,7 +94,7 @@ def test_http_exceptions_pass_through_unchanged(monkeypatch):
         raise ValueError("No employee user found to own the ticket")
 
     monkeypatch.setattr(main, "create_ticket", no_user)
-    monkeypatch.setattr(main, "update_status", lambda ticket_id, status: None)
+    monkeypatch.setattr(main, "update_status", lambda ticket_id, status, actor=None: None)
     c = client()
 
     bad_request = c.post("/tickets", json={"summary": "Printer is jammed"})

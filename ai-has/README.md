@@ -11,7 +11,8 @@ Capstone project: Applied Generative AI for IT Solution Development.
 - **Guardrails:** every message is checked for prompt injection and length before it reaches the AI. Personal data (emails, phone numbers, card numbers, API keys, passwords) is redacted first.
 - **Tickets:** when the answer is "not found", the "Create a ticket" button creates a real ticket. Ticket text is also PII-redacted.
 - **Actions with confirmation:** Orbie can propose opening a ticket (with a mock Jira key from n8n) or sending a password reset link (mock Active Directory). It only proposes. A card with Confirm and Cancel appears, and nothing runs until you confirm. Every decision is written to `audit_logs`. See "Actions from chat" below.
-- **Admin dashboard** (`/admin`): ticket KPIs, a ticket list with a status filter, and status changes (open, in progress, resolved).
+- **Login and roles:** everyone logs in. Employees can chat and create tickets. Only agents and admins see the dashboard. See "Login and roles" below.
+- **Admin dashboard** (`/admin`, agent or admin): ticket KPIs, a ticket list with a status filter, and status changes (open, in progress, resolved).
 - **Evaluation:** scripts that measure retrieval accuracy, deflection, escalation, guardrails and latency.
 
 If the best match is too far away (distance above 0.5) or the model replies NO_ANSWER, the API returns a "not found" message with `escalate=true`.
@@ -22,16 +23,20 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 ## Endpoints
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` | Chat page |
-| GET | `/admin` | Admin dashboard (no login yet) |
-| POST | `/chat` | Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`) |
-| POST | `/actions/confirm` | Body `{action_id, confirm}`. Runs (true) or drops (false) a proposed action. Only the owner can decide it, once. 403 other owner, 404 unknown, 409 already handled, 410 expired |
-| POST | `/tickets` | Create a ticket from `summary` (3 to 500 chars) and `priority` |
-| GET | `/tickets` | List tickets, optional `?status=` |
-| PATCH | `/tickets/{id}` | Change status |
-| GET | `/stats` | Ticket totals, by priority, average resolution hours |
-| GET | `/health` | App and database status |
-| GET | `/docs` | API docs |
+| GET | `/login` | Login page (public) |
+| POST | `/auth/login` | JSON `{email, password}`. Sets the session cookie. 401 wrong login, 429 too many failures, 503 if `SESSION_SECRET` is not set |
+| POST | `/auth/logout` | Clears the session cookie |
+| GET | `/auth/me` | The logged-in user `{id, email, name, role}`, or 401 |
+| GET | `/` | Chat page (any logged-in user, else redirect to `/login`) |
+| GET | `/admin` | Admin dashboard (agent or admin; employee gets 403, logged out is redirected) |
+| POST | `/chat` | Login required. Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`) |
+| POST | `/actions/confirm` | Login required. Body `{action_id, confirm}`. Runs (true) or drops (false) a proposed action. Only the owner can decide it, once. 403 other owner, 404 unknown, 409 already handled, 410 expired |
+| POST | `/tickets` | Login required. Create a ticket owned by you from `summary` (3 to 500 chars) and `priority` |
+| GET | `/tickets` | Agent or admin. List tickets, optional `?status=` |
+| PATCH | `/tickets/{id}` | Agent or admin. Change status (audited) |
+| GET | `/stats` | Agent or admin. Ticket totals, by priority, average resolution hours |
+| GET | `/health` | App and database status (public) |
+| GET | `/docs` | API docs (public) |
 
 Pages and static files are sent with `Cache-Control: no-cache`, so a rebuilt frontend is not hidden by an old cached copy.
 
@@ -40,13 +45,52 @@ Pages and static files are sent with `Cache-Control: no-cache`, so a rebuilt fro
 - **Security headers** on every response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
 - **Safe errors:** an unexpected error returns `{"detail": "Something went wrong. Please try again."}` with status 500. The details only go to the server log, so no stack trace, database URL or key reaches the client. Normal 400, 404, 429 and 422 responses are unchanged.
 
+## Login and roles
+Everyone logs in at `/login`. Three roles exist (`users.role`): `employee`, `agent` and `admin`. Agent and admin have the same rights for now.
+
+| Who | Can do |
+|---|---|
+| Logged out | Open `/login` and `/health`. Everything else answers 401, and the pages `/` and `/admin` redirect to `/login` |
+| `employee` | The chat (`/`, `POST /chat`), `POST /tickets` and `POST /actions/confirm`. `/admin`, `GET /tickets`, `PATCH /tickets/{id}` and `GET /stats` answer 403 |
+| `agent`, `admin` | Everything an employee can, plus the dashboard (`/admin`), `GET /tickets`, `PATCH /tickets/{id}` and `GET /stats` |
+
+Tickets and proposed actions belong to the logged-in user. The chat and admin headers show the name, the role and a Log out button. Chat history in the browser is stored per user id.
+
+**How it works**
+- **Passwords** are hashed with PBKDF2-HMAC-SHA256 from the standard library (600000 iterations, random salt), so there is no new dependency. A wrong email takes as long as a wrong password, and both give the same message.
+- **Session:** `POST /auth/login` (JSON `{email, password}`) sets a signed token in the cookie `aihas_session`: `HttpOnly`, `SameSite=Lax`, `Path=/`, expiring after `SESSION_HOURS` (default 4). `GET /auth/me` returns the user. `POST /auth/logout` clears the cookie. The token holds only the user id, so the role is read from the database on every request and a role change or removed user takes effect at once.
+- **`SESSION_SECRET`** signs the token. It must be at least 32 characters. While it is empty or short, login answers 503. Make one with `python -c "import secrets; print(secrets.token_urlsafe(48))"` and put it in `.env`. Changing it logs everyone out.
+- **`COOKIE_SECURE` should be `true` behind https**, so the browser only sends the cookie over https. It is `false` by default because local development uses plain http.
+- **Logout only clears the cookie.** The signed token is not stored on the server, so a copy of it stays valid until it expires. Keep `SESSION_HOURS` short. Revoking tokens would need a sessions table, which is not built.
+- **Cross-site requests:** every POST, PATCH and DELETE must be JSON (`Content-Type: application/json`), otherwise 415, so a plain HTML form cannot send one. If the browser sends an `Origin` header it must match the site, otherwise 403. There is no CORS.
+- **Failed logins** are limited in memory: 5 per 10 minutes per email, and 20 per 10 minutes per client IP (`LOGIN_MAX_FAILURES_PER_EMAIL`, `LOGIN_MAX_FAILURES_PER_IP`, `LOGIN_WINDOW_MINUTES`). Over the limit the answer is 429 with `Retry-After`, even for the right password. A good login clears the email counter. The counters reset on restart. A known email can be locked for a few minutes by someone failing on purpose, which is the price of this protection.
+- **`/docs` is public.** The API docs and `/openapi.json` need no login. They show the route names and fields but no data.
+
+**Audit.** `audit_logs` gets a row for `login`, `login_failed`, `logout`, every `ticket_status_change` (ticket id, old and new status, written in the same transaction as the change), `password_set` (from the helper below), and each confirmed or cancelled action. The actor is `user:<id>`, or `anonymous` for a failed login with an unknown email. No row holds an email, a name, a password or ticket text.
+
+**Demo users.** `init_db` gives the three demo users the password in `DEMO_PASSWORD` (at least 8 characters), only where they have none yet and only on a local database. It never overwrites a password, never prints it, and skips this step on any non-local host even with `--allow-remote`. `DEMO_PASSWORD` and `SESSION_SECRET` have placeholders in `.env.example`, and the real values belong only in your own `.env`.
+```bash
+docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas -e DEMO_PASSWORD=choose-one backend python -m app.init_db
+```
+
+**Real accounts.** Existing users, for example on Supabase, have no password until one is set:
+```bash
+docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.set_password someone@example.com
+```
+The password is typed at a hidden prompt (twice). It is never taken from an argument, an environment variable or a pipe, and the command needs an interactive terminal. It only changes an existing user and creates nobody. It refuses a database that is not `db` or `localhost` unless `--allow-remote` is given, and that flag is only for when the team lead has said to change passwords on Supabase.
+
+**Before this reaches Supabase:** the team lead reviews the new column in `schema.sql`, applies it, and sets real passwords with `set_password`. Until then nobody there can log in.
+
+**Not built:** password reset by email, changing your own password in the UI, token revocation, per-role differences between agent and admin, and two-factor login.
+
 ## Quick start (Supabase)
 ```bash
-cp .env.example .env      # fill in GEMINI_API_KEY and DATABASE_URL (ask the team lead)
+cp .env.example .env      # fill in GEMINI_API_KEY and DATABASE_URL (ask the team lead), and SESSION_SECRET (see Login and roles)
 docker compose up --build
 ```
 - Chat page: http://localhost:8000
-- Admin dashboard: http://localhost:8000/admin
+- Login: http://localhost:8000/login
+- Admin dashboard: http://localhost:8000/admin (agent or admin)
 - API docs: http://localhost:8000/docs
 - Health: http://localhost:8000/health
 
@@ -84,13 +128,15 @@ Ingest needs a valid `GEMINI_API_KEY` in `.env`, because it creates embeddings.
 Passing `--allow-remote` overrides the guard, for example `python -m app.init_db --allow-remote`. Only use it when the team lead has said to write to Supabase.
 
 ## Database schema
-`backend/schema.sql` creates every table with `CREATE ... IF NOT EXISTS`, so it never changes existing data. `python -m app.init_db` applies it and seeds three demo users (`employee@example.com`, `agent@example.com`, `admin@example.com`).
+`backend/schema.sql` creates every table with `CREATE ... IF NOT EXISTS`, so it never changes existing data. `python -m app.init_db` applies it and seeds three demo users (`employee@example.com`, `agent@example.com`, `admin@example.com`), with the password from `DEMO_PASSWORD` on a local database.
 
 **Note:** `schema.sql` was written from `models.py` and from how `ingest.py` and `rag.py` use `kb_chunks`. It must match the real Supabase definition, which the team lead needs to verify. Do not run `init_db` against Supabase until that is done.
 
 **New table:** `pending_actions` (additive, `create table if not exists`) holds proposed actions. It exists only in the local database so far. The team lead should review it in `schema.sql` before it is applied to Supabase. Until then, on Supabase, a proposal cannot be stored, so `/chat` logs the error and gives the normal answer. `audit_logs.actor` now holds `user:<id>`, not an email.
 
-Tickets are owned by `employee@company.com`. If that user does not exist (for example on a database seeded by `init_db`), the first user with role `employee` is used and a warning is logged.
+**New column:** `users.password_hash` (`alter table users add column if not exists`, additive). Same rule: review it first. Existing users keep working in the database but cannot log in until a password is set.
+
+Tickets are owned by the logged-in user. The old default, `employee@company.com` (or the first `employee` user with a logged warning), is only used when code creates a ticket without an email, for example in tests.
 
 ## Evaluation
 Two question sets:
@@ -118,12 +164,12 @@ Each call is retried with exponential backoff, and every result is saved to `eva
 ```bash
 docker compose run --rm -e DATABASE_URL=... backend python -m app.loadtest                       # mock mode, no Gemini, no database
 docker compose run --rm -e DATABASE_URL=... backend python -m app.loadtest --mode retrieval-only -n 50 -c 5 --yes
-python -m app.loadtest --mode full --url http://localhost:8000 -n 30 -c 3 --yes                  # against a running server
+LOADTEST_PASSWORD=... python -m app.loadtest --mode full --url http://localhost:8000 --user employee@example.com -n 30 -c 3 --yes   # against a running server, after logging in
 ```
 It sends `-n` requests to `POST /chat` with `-c` concurrent workers and reports requests per second, error rate, and median, p95 and p99 latency. The first lines of the output say which mode ran:
-- **mock** (default): the app runs in-process with a stubbed answer step. No Gemini calls and no database. It measures the app's own overhead only.
+- **mock** (default): the app runs in-process as a fixed test user, with a stubbed answer step and no action step. No Gemini calls and no database. It measures the app's own overhead only.
 - **retrieval-only**: real embedding and database search, no chat model. Spends one embedding call per request.
-- **full**: real requests to a running server. Spends up to one embedding and one chat call per request. Start that server with `RATE_LIMIT_ENABLED=false`, or the rate limit answers 429 (counted separately).
+- **full**: real requests to a running server, logged in as `--user` with the password from the `LOADTEST_PASSWORD` environment variable (login is required now). Spends up to one embedding and one chat call per request. Start that server with `RATE_LIMIT_ENABLED=false`, or the rate limit answers 429 (counted separately).
 
 The modes that spend quota refuse to run without `--yes`. The result is written as a marked "Load test" section of `report.md`, and `eval_run` keeps that section when it rewrites the report (`--no-report` skips it).
 
@@ -177,7 +223,7 @@ Flow: the user asks for something, Orbie proposes, the user confirms, the backen
 
 **If tool calling is unreliable.** If the tool call raises an error or comes back malformed (bad JSON, unknown tool), `propose_action` falls back to a small rule: a message that clearly asks to create or open a ticket, or to reset or unlock a password, and is not a "how, what, why..." question. The same confirm step still applies. This was checked end to end with a rejected model key, where the rule path produced the proposals. It has not been checked against a live Gemini tool call, so try it with a real key (see below).
 
-**No login yet.** The user is always `employee@company.com` (or the first employee, with a logged warning), through `current_user_email` in `main.py`. That is the one function to change when real authentication is added. Until then the owner check separates users only once that function returns different users.
+**Owner.** A proposal belongs to the logged-in user, and only that user can confirm or cancel it.
 
 **Try it locally** (local database, n8n imported and active as described above):
 ```bash
@@ -186,7 +232,7 @@ docker compose --profile n8n up -d n8n
 docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.init_db
 docker compose run --rm --service-ports -e N8N_WEBHOOK_URL=http://n8n:5678/webhook -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend
 ```
-Then open http://localhost:8000 and type "please reset my password" or "create a ticket, my monitor flickers". Check the result with `docker compose exec db psql -U aihas -d aihas -c "select actor, action, payload from audit_logs order by id desc limit 5;"`. If you set `N8N_WEBHOOK_SECRET`, pass it to the backend with `-e N8N_WEBHOOK_SECRET=...` too.
+Then open http://localhost:8000, log in (for example as `employee@example.com` with your `DEMO_PASSWORD`; `SESSION_SECRET` must be set in `.env` or passed with `-e`), and type "please reset my password" or "create a ticket, my monitor flickers". Check the result with `docker compose exec db psql -U aihas -d aihas -c "select actor, action, payload from audit_logs order by id desc limit 5;"`. If you set `N8N_WEBHOOK_SECRET`, pass it to the backend with `-e N8N_WEBHOOK_SECRET=...` too.
 
 ## Tests
 No Gemini calls and no real database are needed. Tests stub the database engine.
@@ -199,7 +245,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -209,9 +255,9 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
-- `frontend/chat/` and `frontend/admin/`: the two pages
+- `frontend/chat/`, `frontend/admin/` and `frontend/login/`: the three pages (`chat/session.js` is shared by chat and admin)
 - `kb/`: IT knowledge base SOPs (markdown)
 - `docs/`: architecture, prompt taxonomy
 - `tests/`: pytest tests
@@ -221,7 +267,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker buil
 - Intent classification beyond the keyword check that decides when to offer tools
 - Real Jira and Active Directory (the workflows are mocks)
 - Saving conversations and messages to the database (chat history lives in the browser)
-- Login and roles for the admin page
+- Password reset by email, token revocation and two-factor login (see Login and roles)
 
 ## Progress
 - [x] Week 1–2: architecture, schema, Docker, taxonomy

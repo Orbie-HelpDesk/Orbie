@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import actions, main, proposals
+from app.auth import current_user
 from fake_actions_db import FakeActionsDb
 
 USERS = {"owner@company.com": 1, "other@company.com": 2}
@@ -220,7 +221,8 @@ def client(db, runs):
 
 
 def as_user(email):
-    main.app.dependency_overrides[main.current_user_email] = lambda: email
+    user = {"id": USERS[email], "email": email, "name": "Test", "role": "employee"}
+    main.app.dependency_overrides[current_user] = lambda: user
 
 
 def test_endpoint_confirms_and_rejects_replays(client, db, runs):

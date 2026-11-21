@@ -8,7 +8,7 @@ from app.config import settings
 
 
 @pytest.fixture(autouse=True)
-def stub_backends(monkeypatch):
+def stub_backends(monkeypatch, login_as):
     """No Gemini and no database: the routes behind the limiter are replaced."""
     monkeypatch.setattr(
         main,
@@ -18,8 +18,9 @@ def stub_backends(monkeypatch):
     monkeypatch.setattr(
         main,
         "create_ticket",
-        lambda summary, priority, source="ai": {"id": 1, "ref": "TCK-0001", "summary": summary},
+        lambda summary, priority, source="ai", user_email=None: {"id": 1, "ref": "TCK-0001", "summary": summary},
     )
+    login_as("employee")
     monkeypatch.setattr(settings, "rate_limit_enabled", True)
     monkeypatch.setattr(settings, "rate_limit_chat_per_min", 20)
     monkeypatch.setattr(settings, "rate_limit_tickets_per_min", 10)

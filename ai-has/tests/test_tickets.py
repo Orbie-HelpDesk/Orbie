@@ -87,7 +87,8 @@ def test_no_user_at_all_raises_clear_error(monkeypatch):
         tickets.create_ticket("Printer is jammed")
 
 
-def test_post_tickets_creates_ticket_and_redacts_pii(monkeypatch):
+def test_post_tickets_creates_ticket_and_redacts_pii(monkeypatch, login_as):
+    login_as("employee")
     conn = use_engine(monkeypatch, {}, first_employee_id=1)
     res = TestClient(main.app).post(
         "/tickets", json={"summary": "My VPN fails, email me at juan@company.com", "priority": "high"}
@@ -100,7 +101,8 @@ def test_post_tickets_creates_ticket_and_redacts_pii(monkeypatch):
     assert conn.insert_params["src"] == "escalation"
 
 
-def test_post_tickets_returns_400_when_no_user_exists(monkeypatch):
+def test_post_tickets_returns_400_when_no_user_exists(monkeypatch, login_as):
+    login_as("employee")
     use_engine(monkeypatch, {}, first_employee_id=None)
     res = TestClient(main.app).post("/tickets", json={"summary": "Printer is jammed"})
     assert res.status_code == 400

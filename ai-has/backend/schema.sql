@@ -17,6 +17,9 @@ create table if not exists users (
     created_at timestamp not null default now()
 );
 
+-- Added for login. Additive: existing users keep working and simply have no password yet.
+alter table users add column if not exists password_hash varchar(255);  -- pbkdf2_sha256$iters$salt$hash
+
 create table if not exists conversations (
     id serial primary key,
     user_id integer not null references users (id),
