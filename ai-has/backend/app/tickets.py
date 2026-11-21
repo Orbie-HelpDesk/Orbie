@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from . import audit
 from .db import engine
+from .timeutil import as_utc
 
 PRIORITIES = {"low", "medium", "high"}
 STATUSES = {"open", "in_progress", "resolved"}
@@ -69,7 +70,7 @@ def create_ticket(
         "summary": summary,
         "status": row["status"],
         "priority": row["priority"],
-        "created_at": row["created_at"],
+        "created_at": as_utc(row["created_at"]),
     }
 
 
@@ -85,7 +86,7 @@ def set_external_ref(ticket_id: int, external_ref: str) -> None:
 def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
     sql = (
         "select t.id, t.summary, t.priority, t.status, t.source, "
-        "t.created_at, t.resolved_at, u.email, u.name "
+        "t.created_at, t.resolved_at, t.external_ref, u.email, u.name "
         "from tickets t join users u on u.id = t.user_id "
     )
     params: dict = {"limit": limit}
@@ -105,8 +106,9 @@ def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
             "priority": r["priority"],
             "status": r["status"],
             "source": r["source"],
-            "created_at": r["created_at"],
-            "resolved_at": r["resolved_at"],
+            "external_ref": r["external_ref"],  # Jira-style key such as HELP-1234, or None
+            "created_at": as_utc(r["created_at"]),
+            "resolved_at": as_utc(r["resolved_at"]),
             "requester": r["name"],
             "requester_email": r["email"],
         }
@@ -142,11 +144,12 @@ def update_status(ticket_id: int, status: str, actor: str | None = None) -> dict
         "id": row["id"],
         "ref": _ref(row["id"]),
         "status": row["status"],
-        "resolved_at": row["resolved_at"],
+        "resolved_at": as_utc(row["resolved_at"]),
     }
 
 
-def get_stats() -> dict:
+def get_stats(tz: str = "UTC") -> dict:
+    """Ticket numbers. "Created today" is the day that is running in the time zone `tz`."""
     with engine.connect() as conn:
         totals = conn.execute(
             text(
@@ -155,11 +158,13 @@ def get_stats() -> dict:
                 "count(*) filter (where status = 'open') as open, "
                 "count(*) filter (where status = 'in_progress') as in_progress, "
                 "count(*) filter (where status = 'resolved') as resolved, "
-                "count(*) filter (where created_at >= date_trunc('day', now())) as today, "
+                "count(*) filter (where created_at >= "
+                "  ((date_trunc('day', now() at time zone :tz) at time zone :tz) at time zone 'UTC')) as today, "
                 "avg(extract(epoch from (resolved_at - created_at)) / 3600) "
                 "  filter (where status = 'resolved') as avg_hours "
                 "from tickets"
-            )
+            ),
+            {"tz": tz},
         ).mappings().one()
 
         prio_rows = conn.execute(

@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from . import audit
 from .db import engine
+from .timeutil import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +154,8 @@ def list_conversations(user_id: int, limit: int = 50) -> list[dict]:
             "id": r["id"],
             "title": r["title"] or "Chat",
             "status": r["status"],
-            "created_at": r["created_at"],
-            "last_at": r["last_at"] or r["created_at"],
+            "created_at": as_utc(r["created_at"]),
+            "last_at": as_utc(r["last_at"] or r["created_at"]),
             "questions": r["questions"],
         }
         for r in rows
@@ -182,8 +183,8 @@ def get_conversation(conversation_id: int) -> dict | None:
         "user_id": head["user_id"],
         "title": head["title"] or "Chat",
         "status": head["status"],
-        "created_at": head["created_at"],
-        "messages": [dict(r) for r in rows],
+        "created_at": as_utc(head["created_at"]),
+        "messages": [{**r, "created_at": as_utc(r["created_at"])} for r in rows],
     }
 
 

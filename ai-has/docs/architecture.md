@@ -98,7 +98,10 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 ## Request flow: tickets
 1. On a not-found answer the chat page shows "Create a ticket". It sends the question (trimmed to 500 characters) to `POST /tickets`.
 2. The summary is PII-redacted, then saved with source `escalation`. The ticket belongs to the logged-in user.
-3. The page shows the ticket reference (for example `TCK-0002`). The admin dashboard shows it through `GET /tickets` and `GET /stats`.
+3. The page shows the ticket reference (for example `TCK-0002`). The admin dashboard shows it through `GET /tickets` and `GET /stats`, together with the Jira-style key (`external_ref`, for example `HELP-4821`) once n8n has returned one, and a dash until then.
+
+## Time
+Stored times are UTC in `timestamp without time zone` columns. `timeutil.as_utc` marks them as UTC where they leave the API, so the JSON carries `+00:00`, and the browser shows them in the viewer's local time. `?tz=` (validated against `pg_timezone_names`, passed only as a bound parameter) moves the day boundaries of `/stats` and `/stats/analytics` to the viewer's zone. The UTC assumption is documented in the README, with a check for Supabase.
 
 ## Database
 Tables (`users` has `password_hash`, `conversations` has `title`, `messages` has `feedback`, `escalated` and `blocked`): `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`, `pending_actions` (new, additive, to be reviewed by the team lead before it is applied to Supabase). See `backend/schema.sql`, which must be verified against the real Supabase definition.

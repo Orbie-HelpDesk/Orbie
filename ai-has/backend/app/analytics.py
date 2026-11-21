@@ -9,6 +9,7 @@ Definitions
 - latency: whole request time in ms, over assistant messages that were not blocked.
 - the escalated questions are the saved, PII-redacted texts. Redaction is pattern based, so a
   few personal details can still get through. Messages removed by purge_old are left out.
+- days: calendar days in the viewer's time zone (the `tz` parameter, UTC by default), today included.
 """
 from datetime import date, timedelta
 
@@ -18,16 +19,21 @@ from .chatlog import PURGED_TEXT
 from .db import engine
 
 TOP_N = 10
-SINCE = "date_trunc('day', now()) - make_interval(days => :d - 1)"
+# Times are stored in UTC. :tz is a bound parameter holding a name checked against pg_timezone_names
+# (see timeutil.check_timezone). It is never put into the SQL text.
+LOCAL = "(created_at at time zone 'UTC') at time zone :tz"  # the stored time as the viewer's wall clock
+SINCE = (  # the start of the viewer's day, :d - 1 days ago, as a UTC time to compare with created_at
+    "((date_trunc('day', now() at time zone :tz) - make_interval(days => :d - 1)) at time zone :tz) at time zone 'UTC'"
+)
 
 DAILY_SQL = text(
-    f"select date_trunc('day', created_at)::date as day, count(*) as n from messages "
+    f"select date_trunc('day', {LOCAL})::date as day, count(*) as n from messages "
     f"where role = 'user' and not blocked and created_at >= {SINCE} group by 1 order by 1"
 )
 
 TOTALS_SQL = text(
     f"""
-    select current_date as today,
+    select (now() at time zone :tz)::date as today,
            count(*) filter (where intent = 'answered') as answered,
            count(*) filter (where intent = 'escalated') as escalated,
            count(*) filter (where intent = 'action_proposed') as actions,
@@ -104,8 +110,9 @@ def build(days: int, today: date, daily_rows, totals, article_rows, escalated_ro
     }
 
 
-def compute(days: int) -> dict:
-    params = {"d": days}
+def compute(days: int, tz: str = "UTC") -> dict:
+    """The analytics for the last `days` days. Days begin and end in the time zone `tz`."""
+    params = {"d": days, "tz": tz}
     with engine.connect() as conn:
         daily = conn.execute(DAILY_SQL, params).mappings().all()
         totals = conn.execute(TOTALS_SQL, params).mappings().one()

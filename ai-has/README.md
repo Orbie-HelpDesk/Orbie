@@ -37,14 +37,18 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 | PATCH | `/messages/{id}/feedback` | Body `{value}` with -1, 0 or 1. Only on assistant messages in your own conversations, else 404 |
 | POST | `/actions/confirm` | Login required. Body `{action_id, confirm}`. Runs (true) or drops (false) a proposed action. Only the owner can decide it, once. 403 other owner, 404 unknown, 409 already handled, 410 expired |
 | POST | `/tickets` | Login required. Create a ticket owned by you from `summary` (3 to 500 chars), `priority` and an optional `conversation_id` of your own chat |
-| GET | `/tickets` | Agent or admin. List tickets, optional `?status=` |
+| GET | `/tickets` | Agent or admin. List tickets, optional `?status=`. Each ticket has `ref` (`TCK-0007`), `external_ref` (the Jira-style key such as `HELP-4821`, or `null` until n8n has returned one), `created_at` and `resolved_at` |
 | PATCH | `/tickets/{id}` | Agent or admin. Change status (audited) |
-| GET | `/stats` | Agent or admin. Ticket totals, by priority, average resolution hours |
-| GET | `/stats/analytics` | Agent or admin. `?days=` 1 to 365 (default 30). Chat analytics, see below |
+| GET | `/stats` | Agent or admin. Ticket totals, by priority, average resolution hours. `?tz=` (an IANA name such as `Asia/Singapore`) makes "created today" follow that zone's day |
+| GET | `/stats/analytics` | Agent or admin. `?days=` 1 to 365 (default 30) and `?tz=`. Chat analytics, see below |
 | GET | `/health` | App and database status (public) |
 | GET | `/docs` | API docs (public) |
 
 Pages and static files are sent with `Cache-Control: no-cache`, so a rebuilt frontend is not hidden by an old cached copy.
+
+**Timestamps and time zones.** Every timestamp the API sends (tickets, conversations, messages) is ISO 8601 in UTC with its offset, for example `2026-11-21T03:13:40+00:00`. The pages turn it into the viewer's local time in the browser. The database columns are `timestamp without time zone` and are read as UTC, which is what `now()` writes on a UTC server. That holds on the local database (`Etc/UTC`). **The team lead should confirm it on Supabase with `show timezone;`**, and if it is not UTC the stored times, and so the displayed ones, are off by that difference.
+
+`?tz=` on `/stats` and `/stats/analytics` is checked against `pg_timezone_names` and is only ever sent to the database as a bound parameter, never added to the SQL text. An unknown name gets 422, and no `tz` means UTC. The dashboard sends the browser's zone, so a Singapore viewer's days start at midnight Singapore time: the "Created today" tile and each bar of the questions-per-day chart follow their day instead of the UTC day.
 
 ## Security basics
 - **Rate limits** per client IP, in memory: `POST /chat` 20 per minute, `POST /tickets` 10 per minute and `POST /actions/confirm` 20 per minute. Over the limit the API returns 429 with `Retry-After`. Set `RATE_LIMIT_ENABLED`, `RATE_LIMIT_CHAT_PER_MIN`, `RATE_LIMIT_TICKETS_PER_MIN` and `RATE_LIMIT_ACTIONS_PER_MIN` in `.env` (names and defaults are in `.env.example`). `RATE_LIMIT_ENABLED=false` switches all limits off, for example for a load test. The counters are per process and reset on restart. The limit uses the direct client IP, so behind a reverse proxy all users share one IP.
@@ -117,7 +121,7 @@ docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@
 ```
 For messages older than N days it replaces the text with `[purged]`, and for every conversation that has such a message it replaces the title too (the title comes from the first question). Rows, times, citations, confidence, latency, thumbs and the escalated flag stay, so the counts in the analytics survive, but the escalated question list drops purged questions. `--dry-run` only counts. It writes one `messages_purged` audit row with counts, refuses a database that is not `db` or `localhost` unless `--allow-remote` is given (only when the team lead has said to change data on Supabase), and prints counts only. It does not touch tickets, whose summaries are redacted but are business records, so they need their own retention decision.
 
-**Analytics.** `GET /stats/analytics?days=30` (agent or admin, 1 to 365 days) feeds the Analytics section of the dashboard: questions per day, the deflection rate (`answered / (answered + escalated)`, with blocked messages and proposed actions left out), median and 95th percentile response time, the thumbs-up share (`up / (up + down)`), the most cited articles and the most escalated questions.
+**Analytics.** `GET /stats/analytics?days=30&tz=Asia/Singapore` (agent or admin, 1 to 365 days, days counted in `tz`, UTC by default) feeds the Analytics section of the dashboard: questions per day, the deflection rate (`answered / (answered + escalated)`, with blocked messages and proposed actions left out), median and 95th percentile response time, the thumbs-up share (`up / (up + down)`), the most cited articles and the most escalated questions.
 
 ## Quick start (Supabase)
 ```bash

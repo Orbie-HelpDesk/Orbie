@@ -1,6 +1,9 @@
 """In-memory stand-in for the conversations and messages tables, for the chat saving tests."""
 import json
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+
+BASE = datetime(2026, 11, 21, 3, 0, 0)  # plain, like the database driver returns
 
 
 class Result:
@@ -71,6 +74,7 @@ class FakeChatConn:
                 "intent": params["i"], "citations": json.loads(params["ci"]) if params["ci"] else None,
                 "confidence": params["cf"], "latency_ms": params["l"], "escalated": params["e"],
                 "blocked": params["b"], "feedback": None,
+                "created_at": BASE + timedelta(seconds=mid),
             })
             return Result(mid)
         if "update conversations set status = 'escalated'" in sql:
@@ -90,15 +94,15 @@ class FakeChatConn:
                     continue
                 mine = [m for m in db.messages if m["conversation_id"] == c["id"]]
                 rows.append({
-                    "id": c["id"], "title": c["title"], "status": c["status"], "created_at": c.get("created_at", "t0"),
+                    "id": c["id"], "title": c["title"], "status": c["status"], "created_at": c.get("created_at", BASE),
                     "questions": sum(1 for m in mine if m["role"] == "user"),
-                    "last_at": mine[-1]["id"] if mine else None,
+                    "last_at": mine[-1]["created_at"] if mine else None,
                 })
-            rows.sort(key=lambda r: (r["last_at"] is not None, r["last_at"] or 0, r["id"]), reverse=True)
+            rows.sort(key=lambda r: (r["last_at"] is not None, r["last_at"] or BASE, r["id"]), reverse=True)
             return Result(rows=rows[: params["n"]])
         if "select id, user_id, title, status, created_at from conversations" in sql:
             c = db.conversations.get(params["c"])
-            return Result(rows=[{**c, "created_at": c.get("created_at", "t0")}] if c else [])
+            return Result(rows=[{**c, "created_at": c.get("created_at", BASE)}] if c else [])
         if "from messages where conversation_id = :c order by id" in sql:
             return Result(rows=[m for m in db.messages if m["conversation_id"] == params["c"]])
         if "update tickets set conversation_id = null" in sql:

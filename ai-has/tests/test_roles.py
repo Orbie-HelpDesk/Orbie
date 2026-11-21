@@ -27,7 +27,7 @@ def seen(monkeypatch, tmp_path):
 
     calls = {"ticket": [], "status": [], "chat": [], "confirm": []}
     monkeypatch.setattr(main, "list_tickets", lambda status=None: [{"id": 1}])
-    monkeypatch.setattr(main, "get_stats", lambda: {"total": 1})
+    monkeypatch.setattr(main, "get_stats", lambda tz="UTC": {"total": 1})
 
     def fake_status(ticket_id, status, actor=None):
         calls["status"].append((ticket_id, status, actor))

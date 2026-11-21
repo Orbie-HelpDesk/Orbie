@@ -557,7 +557,8 @@ async function ask(question) {
 // The server stores times without a zone, in UTC
 function serverTime(value) {
   if (!value) return Date.now();
-  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : value + "Z");
+  const text = value.replace(/(\.\d{3})\d+/, "$1"); // some browsers only accept milliseconds
+  const t = Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(text) ? text : text + "Z");
   return Number.isNaN(t) ? Date.now() : t;
 }
 

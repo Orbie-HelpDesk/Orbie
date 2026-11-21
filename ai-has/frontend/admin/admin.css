@@ -157,6 +157,8 @@ th {
 }
 td.ref { font-weight: 700; white-space: nowrap; color: var(--a1); }
 td.when { white-space: nowrap; color: var(--muted); }
+td.jira { font-weight: 600; white-space: nowrap; }
+td.jira.none { font-weight: 400; color: var(--muted); }
 
 .tag {
   display: inline-block;
