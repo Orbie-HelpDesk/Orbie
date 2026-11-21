@@ -69,7 +69,19 @@ class KBDocument(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    actor: Mapped[str] = mapped_column(String(80))  # user email or "ai"
+    actor: Mapped[str] = mapped_column(String(80))  # "user:<id>" or "ai", never an email
     action: Mapped[str] = mapped_column(String(60))  # e.g. reset_password, create_ticket
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class PendingAction(Base):
+    __tablename__ = "pending_actions"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # secrets.token_urlsafe
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(40))  # create_ticket | request_password_reset
+    arguments: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # validated, PII-redacted
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | confirmed | cancelled | done | failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

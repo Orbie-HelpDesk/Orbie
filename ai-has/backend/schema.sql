@@ -71,10 +71,22 @@ create table if not exists kb_chunks (
 
 create table if not exists audit_logs (
     id serial primary key,
-    actor varchar(80) not null,  -- user email or "ai"
+    actor varchar(80) not null,  -- "user:<id>" or "ai", never an email
     action varchar(60) not null,  -- e.g. reset_password, create_ticket
     payload json,
     created_at timestamp not null default now()
+);
+
+-- Actions the assistant proposed. They run only after the owner confirms, once.
+create table if not exists pending_actions (
+    id varchar(64) primary key,  -- secrets.token_urlsafe, unguessable
+    owner_user_id integer not null references users (id),
+    name varchar(40) not null,  -- create_ticket | request_password_reset
+    arguments json,  -- validated and PII-redacted
+    status varchar(20) not null default 'pending',  -- pending | confirmed | cancelled | done | failed
+    created_at timestamp not null default now(),
+    expires_at timestamp not null,
+    decided_at timestamp
 );
 
 -- Cosine distance, matching the <=> operator used in rag.py.

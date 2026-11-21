@@ -32,6 +32,14 @@ def _find_user_id(conn, user_email: str) -> int:
     return user_id
 
 
+def resolve_user(user_email: str) -> dict:
+    """The id and real email of the user, with the same fallback as ticket creation."""
+    with engine.connect() as conn:
+        user_id = _find_user_id(conn, user_email)
+        email = conn.execute(text("select email from users where id = :i"), {"i": user_id}).scalar()
+    return {"id": user_id, "email": email}
+
+
 def create_ticket(
     summary: str,
     priority: str = "medium",
@@ -62,6 +70,15 @@ def create_ticket(
         "priority": row["priority"],
         "created_at": row["created_at"],
     }
+
+
+def set_external_ref(ticket_id: int, external_ref: str) -> None:
+    """Saves the key the Jira-style system gave to this ticket."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("update tickets set external_ref = :r where id = :id"),
+            {"r": external_ref, "id": ticket_id},
+        )
 
 
 def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:

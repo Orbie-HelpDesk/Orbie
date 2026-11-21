@@ -545,6 +545,40 @@ body.chatting .hero { display: none; }
 .ticket-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 26px -8px rgba(108, 92, 231, 0.8); }
 .ticket-btn:disabled { opacity: 0.75; cursor: default; background: var(--green); box-shadow: none; }
 
+/* ---------- Proposed action card ---------- */
+.action-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(127, 127, 160, 0.07);
+  animation: pop 0.4s ease;
+}
+.ac-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.ac-title .icon { width: 15px; height: 15px; }
+.ac-body { margin-top: 8px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.ac-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ac-row .ticket-btn { margin-top: 0; }
+.ac-cancel {
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.ac-cancel:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--a1); }
+.ac-cancel:disabled { opacity: 0.6; cursor: default; }
+.ac-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.ac-note:empty { display: none; }
+.action-card[data-state="done"] { border-color: var(--green); }
+.action-card[data-state="done"] .ac-note { color: var(--green); }
+.action-card[data-state="failed"] { border-color: var(--red); }
+.action-card[data-state="failed"] .ac-note { color: var(--red); }
+
 /* ---------- Composer ---------- */
 .dock { display: flex; flex-direction: column; gap: 8px; }
 

@@ -7,11 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from . import proposals
 from .db import engine
 from .guardrails import check_input, redact_pii
-from .rag import answer
-from .ratelimit import limit_chat, limit_tickets
-from .tickets import create_ticket, get_stats, list_tickets, update_status
+from .rag import answer, propose_action
+from .ratelimit import limit_actions, limit_chat, limit_tickets
+from .tickets import DEFAULT_USER, create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
 
@@ -78,6 +79,19 @@ class StatusUpdate(BaseModel):
     status: str
 
 
+class ConfirmRequest(BaseModel):
+    action_id: str = Field(min_length=10, max_length=100)
+    confirm: bool
+
+
+def current_user_email() -> str:
+    """Who is asking. There is no login yet, so this is the default employee.
+
+    This is the one place to change when real authentication is added.
+    """
+    return DEFAULT_USER
+
+
 @app.get("/")
 def home():
     return FileResponse(CHAT_DIR / "index.html", headers=NO_CACHE)
@@ -104,8 +118,23 @@ def health():
     return {"status": "ok", "database": db}
 
 
+ACTION_MESSAGE = "I can do that for you. Please review it and confirm below. Nothing happens until you do."
+
+
+def _store_proposal(user_email: str, clean_message: str) -> dict | None:
+    """A stored proposal for this message, or None. Any failure falls back to a normal answer."""
+    try:
+        raw = propose_action(clean_message)
+        if raw is None:
+            return None
+        return proposals.propose(user_email, raw["name"], raw["arguments"])
+    except Exception:
+        logger.exception("Could not prepare a proposed action")
+        return None
+
+
 @app.post("/chat", dependencies=[Depends(limit_chat)])
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user_email: str = Depends(current_user_email)):
     # 1) Block injection attempts and oversized messages
     verdict = check_input(req.message)
     if verdict["blocked"]:
@@ -115,6 +144,7 @@ def chat(req: ChatRequest):
             "citations": [],
             "escalate": False,
             "distances": [],
+            "proposed_action": None,
             "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": []},
         }
 
@@ -123,8 +153,23 @@ def chat(req: ChatRequest):
     if found:
         print(f"[guardrail] redacted: {found}", flush=True)
 
-    # 3) Normal RAG flow, using only the cleaned text
+    # 3) Does the user ask for an action? The model may only propose it. It is stored for
+    #    this user and runs only after POST /actions/confirm.
+    guardrails = {"blocked": False, "reason": None, "redacted": found}
+    proposal = _store_proposal(user_email, clean)
+    if proposal:
+        return {
+            "answer": ACTION_MESSAGE,
+            "citations": [],
+            "escalate": False,
+            "distances": [],
+            "proposed_action": proposal,
+            "guardrails": guardrails,
+        }
+
+    # 4) Normal RAG flow, using only the cleaned text
     result = answer(clean)
+    result["proposed_action"] = None
     result["guardrails"] = {"blocked": False, "reason": None, "redacted": found}
     return result
 
@@ -155,3 +200,16 @@ def change_ticket(ticket_id: int, req: StatusUpdate):
     if result is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return result
+
+
+@app.post("/actions/confirm", dependencies=[Depends(limit_actions)])
+def confirm_action(req: ConfirmRequest, user_email: str = Depends(current_user_email)):
+    """Runs (confirm=true) or drops (confirm=false) an action the assistant proposed.
+
+    Only the id comes from the client. What runs was stored when the action was proposed,
+    and only its owner can decide it, once.
+    """
+    try:
+        return proposals.decide(req.action_id, user_email, req.confirm)
+    except proposals.ProposalError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)

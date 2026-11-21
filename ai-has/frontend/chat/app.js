@@ -279,6 +279,92 @@ function buildTicketButton(record) {
   return btn;
 }
 
+// ---------- Proposed action (needs the user's confirmation) ----------
+const ACTION_TITLES = {
+  create_ticket: "Create a ticket",
+  request_password_reset: "Reset my password",
+};
+
+// The assistant only proposes. Nothing runs until Confirm is pressed.
+function buildActionCard(record) {
+  const proposal = record.data.proposed_action;
+  const card = document.createElement("div");
+  card.className = "action-card";
+
+  const title = document.createElement("div");
+  title.className = "ac-title";
+  title.innerHTML = icon("ticket");
+  title.append(ACTION_TITLES[proposal.name] || "Proposed action");
+
+  const body = document.createElement("div");
+  body.className = "ac-body";
+  body.textContent = proposal.label;
+
+  const row = document.createElement("div");
+  row.className = "ac-row";
+  const confirmBtn = document.createElement("button");
+  confirmBtn.type = "button";
+  confirmBtn.className = "ticket-btn ac-confirm";
+  confirmBtn.append("Confirm");
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "ac-cancel";
+  cancelBtn.append("Cancel");
+  row.append(confirmBtn, cancelBtn);
+
+  const note = document.createElement("div");
+  note.className = "ac-note";
+  note.setAttribute("role", "status");
+
+  const showResult = (state, message) => {
+    card.dataset.state = state;
+    row.remove();
+    note.textContent = message;
+  };
+
+  card.append(title, body, row, note);
+
+  if (record.action) {
+    showResult(record.action.state, record.action.message);
+    return card;
+  }
+
+  const decide = async (confirm) => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    note.textContent = confirm ? "Working on it..." : "Cancelling...";
+    try {
+      const res = await fetch("/actions/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_id: proposal.id, confirm }),
+      });
+      if (res.status === 429) {
+        note.textContent = "Too many requests. Please wait a moment and try again.";
+        confirmBtn.disabled = false;
+        cancelBtn.disabled = false;
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 403, 404, 409 and 410 are final: the proposal cannot be used again
+        record.action = { state: "closed", message: data.detail || "This action is no longer available." };
+      } else {
+        record.action = { state: data.status, message: data.message };
+      }
+      persist();
+      showResult(record.action.state, record.action.message);
+    } catch (err) {
+      note.textContent = "Could not reach the server. Please try again.";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  };
+  confirmBtn.onclick = () => decide(true);
+  cancelBtn.onclick = () => decide(false);
+  return card;
+}
+
 // ---------- Messages ----------
 function renderUser(m) {
   const msg = document.createElement("div");
@@ -307,7 +393,9 @@ function renderBot(m, animate, onDone) {
 
   fillBubble(bubble, d.answer, animate, () => {
     if (d.distances && d.distances.length) bubble.appendChild(buildTrace(d));
-    if (d.escalate) {
+    if (d.proposed_action) {
+      bubble.appendChild(buildActionCard(m));
+    } else if (d.escalate) {
       bubble.appendChild(buildTicketButton(m));
     } else if (!blocked && d.citations && d.citations.length) {
       bubble.appendChild(buildFeedback());
