@@ -143,3 +143,9 @@ def test_the_period_defaults_to_30_days_and_is_validated(client, login_as):
     assert client.get("/stats/analytics?days=90").json() == {"days": 90, "tz": "UTC"}
     for bad in ("0", "366", "-5", "abc"):
         assert client.get(f"/stats/analytics?days={bad}").status_code == 422
+
+
+def test_the_outcome_counts_read_outcome_and_fall_back_to_intent_for_old_rows():
+    sql = str(analytics.TOTALS_SQL)
+    for outcome in ("answered", "escalated", "action_proposed"):
+        assert f"coalesce(outcome, intent) = '{outcome}'" in sql

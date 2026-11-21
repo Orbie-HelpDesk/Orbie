@@ -331,7 +331,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
         # The raw text is never saved, only a placeholder with the blocked flag
         return _save_exchange(
             response, user, conversation_id, "", started,
-            intent=chatlog.blocked_intent(verdict["reason"]), blocked=True,
+            intent=chatlog.blocked_intent(verdict["reason"]), outcome=chatlog.OUTCOME_BLOCKED, blocked=True,
         )
 
     # 2) Hide personal data before it reaches the AI or the database
@@ -352,7 +352,10 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "proposed_action": proposal,
             "guardrails": guardrails,
         }
-        _save_exchange(response, user, conversation_id, clean, started, intent=chatlog.INTENT_ACTION)
+        _save_exchange(
+            response, user, conversation_id, clean, started,
+            intent=chatlog.INTENT_ACTION, outcome=chatlog.OUTCOME_ACTION,
+        )
         if response["conversation_id"] is not None:
             try:
                 proposals.attach_conversation(proposal["id"], response["conversation_id"])
@@ -367,7 +370,9 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     escalated = bool(result["escalate"])
     return _save_exchange(
         result, user, conversation_id, clean, started,
-        intent=chatlog.INTENT_ESCALATED if escalated else chatlog.INTENT_ANSWERED, escalated=escalated,
+        intent=chatlog.INTENT_ESCALATED if escalated else chatlog.INTENT_ANSWERED,
+        outcome=chatlog.OUTCOME_ESCALATED if escalated else chatlog.OUTCOME_ANSWERED,
+        escalated=escalated,
     )
 
 

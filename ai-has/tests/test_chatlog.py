@@ -80,6 +80,7 @@ def test_a_new_question_creates_a_conversation_with_both_messages(chat):
     assert bot_msg["confidence"] == 0.8  # best distance 0.30
     assert isinstance(bot_msg["latency_ms"], int) and bot_msg["latency_ms"] >= 0
     assert (bot_msg["intent"], bot_msg["escalated"], bot_msg["blocked"]) == ("answered", False, False)
+    assert bot_msg["outcome"] == "answered" and user_msg["outcome"] is None
 
 
 def test_a_follow_up_continues_the_same_conversation(chat):

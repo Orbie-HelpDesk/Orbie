@@ -51,6 +51,7 @@ class Message(Base):
     citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)  # answered | escalated | action_proposed | refused | clarify | blocked
     feedback: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)  # -1, 0 or 1
     escalated: Mapped[bool] = mapped_column(Boolean, default=False)
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)  # content is a placeholder

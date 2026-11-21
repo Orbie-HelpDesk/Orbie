@@ -71,7 +71,7 @@ class FakeChatConn:
             db._next_message += 1
             db.messages.append({
                 "id": mid, "conversation_id": params["c"], "role": params["r"], "content": params["t"],
-                "intent": params["i"], "citations": json.loads(params["ci"]) if params["ci"] else None,
+                "intent": params["i"], "outcome": params["o"], "citations": json.loads(params["ci"]) if params["ci"] else None,
                 "confidence": params["cf"], "latency_ms": params["l"], "escalated": params["e"],
                 "blocked": params["b"], "feedback": None,
                 "created_at": BASE + timedelta(seconds=mid),
