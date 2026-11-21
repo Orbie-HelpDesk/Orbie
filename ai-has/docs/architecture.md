@@ -2,8 +2,11 @@
 
 ```mermaid
 flowchart LR
-    U[Employee] --> FE[Chat UI<br/>HTML, CSS, JS]
+    U[Employee] --> LG[Login page<br/>/login]
+    LG -->|POST /auth/login<br/>signed cookie| API
+    U --> FE[Chat UI<br/>HTML, CSS, JS]
     FE -->|POST /chat| API[FastAPI Backend]
+    API --> RB[Role check<br/>logged in, or agent / admin]
     API --> G1[Input Guardrails<br/>injection check + PII redaction]
     G1 -->|blocked| FE
     G1 --> RAG[Hybrid Search<br/>vector + full-text]
@@ -21,7 +24,8 @@ flowchart LR
     CF --> N8[n8n webhooks<br/>mock Jira, mock AD]
     CF --> AU[(audit_logs)]
     CF --> TK
-    AG[Admin dashboard<br/>/admin] -->|GET /tickets, /stats<br/>PATCH /tickets| API
+    AG[Admin dashboard<br/>/admin<br/>agent or admin] -->|GET /tickets, /stats<br/>PATCH /tickets| API
+    API -->|login, failed login, logout,<br/>ticket status change| AU
     EV[Evaluation scripts] --> API
 ```
 
@@ -30,7 +34,10 @@ flowchart LR
 |---|---|---|
 | Backend | FastAPI (Python 3.12) | Routes, RAG orchestration, guardrails, tickets, serves both pages |
 | Chat page | HTML, CSS, JS in `frontend/chat/` | Chat with Orbie (the assistant's name; AI-HAS is the product), history in the browser, "Create a ticket" button |
-| Admin dashboard | HTML, CSS, JS in `frontend/admin/` | Ticket KPIs, list with status filter, status changes |
+| Login page | HTML, CSS, JS in `frontend/login/` | Sign in, same look as the chat. `chat/session.js` shows the user and Log out, and sends a logged-out visitor to the login page |
+| Admin dashboard | HTML, CSS, JS in `frontend/admin/` | Ticket KPIs, list with status filter, status changes. Agent or admin only |
+| Authentication | `auth.py`, `sessions.py`, `passwords.py`, `loginlimit.py`, `set_password.py` | PBKDF2 password hashes (standard library), signed `HttpOnly`, `SameSite=Lax` session cookie, role checks as FastAPI dependencies, failed login limits, a hidden-prompt helper to set passwords |
+| Audit | `audit.py` | One place that writes `audit_logs` rows without personal data |
 | Rate limit and security | `ratelimit.py`, middleware in `main.py` | Per-IP rate limits on `/chat` and `/tickets`, security headers on every response, generic 500 for unhandled errors |
 | Guardrails | `guardrails.py` | Blocks prompt injection and over-long messages, redacts PII before the AI or the database sees it |
 | Tickets | `tickets.py` | Create, list, change status, KPI stats, save the Jira key |
@@ -55,6 +62,14 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 5. Otherwise the closest chunks go to Gemini with a prompt that allows answers only from that context.
 6. If the model replies NO_ANSWER, the API returns "not found" with `escalate=true`. Else it returns the answer, citations, distances and what was redacted.
 
+## Request flow: login and roles
+1. `POST /auth/login` checks the failed-login limits (per email and per IP), then the password hash. An unknown email is checked against a dummy hash, so it costs the same. Every outcome writes an audit row (`login`, `login_failed`).
+2. On success the answer sets the cookie `aihas_session`: a token `payload.signature` where the payload is `{uid, iat, exp}` and the signature is HMAC-SHA256 with `SESSION_SECRET`. The cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when `COOKIE_SECURE=true`. Login is refused (503) while the secret is missing or shorter than 32 characters.
+3. On every request `current_user` verifies the signature and expiry, then reads the user and role from the database. `require_roles("agent", "admin")` builds on it: no session is 401, the wrong role is 403.
+4. Pages: a logged-out `/` or `/admin` redirects to `/login` (the `next` value must be a local path), and an employee opening `/admin` gets a 403 page.
+5. A middleware rejects any POST, PATCH or DELETE that is not JSON (415) or that carries a foreign `Origin` (403). Together with `SameSite=Lax` and no CORS, this blocks simple cross-site form posts.
+6. Logout clears the cookie and writes a `logout` row. The token is stateless, so a copy stays valid until it expires.
+
 ## Request flow: actions
 1. After the guardrails, if the cleaned message matches a keyword check, one extra model call offers the two tools. A message that does not match costs nothing extra.
 2. If the model calls a tool (or the rule-based fallback matches because the call failed), the arguments are validated and redacted and stored in `pending_actions` with an unguessable id, the owner and a 10 minute expiry. `/chat` returns `proposed_action` and no knowledge base answer. Nothing has run.
@@ -65,23 +80,23 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 
 ## Request flow: tickets
 1. On a not-found answer the chat page shows "Create a ticket". It sends the question (trimmed to 500 characters) to `POST /tickets`.
-2. The summary is PII-redacted, then saved with source `escalation`. The ticket belongs to `employee@company.com`, or to the first `employee` user with a logged warning if that user is missing.
+2. The summary is PII-redacted, then saved with source `escalation`. The ticket belongs to the logged-in user.
 3. The page shows the ticket reference (for example `TCK-0002`). The admin dashboard shows it through `GET /tickets` and `GET /stats`.
 
 ## Database
-Tables: `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`, `pending_actions` (new, additive, to be reviewed by the team lead before it is applied to Supabase). See `backend/schema.sql`, which must be verified against the real Supabase definition.
+Tables (`users` now has `password_hash`): `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`, `pending_actions` (new, additive, to be reviewed by the team lead before it is applied to Supabase). See `backend/schema.sql`, which must be verified against the real Supabase definition.
 
 Scripts that write data (`init_db`, `ingest`) run only when the `DATABASE_URL` host is `db` or `localhost`, unless `--allow-remote` is passed (`safety.py`). Schema changes must be additive and idempotent.
 
 ## Testing and CI
-`pytest` runs without Gemini or a real database by stubbing the engine. The action tests use a fake n8n (a stand-in for `httpx.post`), a fake model client and an in-memory fake of `pending_actions` and `audit_logs`. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`. Their helpers (scoring, judge JSON parsing, sweep, report text, load test statistics) are covered by tests that use fake data.
+`pytest` runs without Gemini or a real database by stubbing the engine. Tests that need a user use the `login_as(role)` fixture, and the login tests use an in-memory fake of `users` and `audit_logs` with real signed cookies. The action tests use a fake n8n (a stand-in for `httpx.post`), a fake model client and an in-memory fake of `pending_actions` and `audit_logs`. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`. Their helpers (scoring, judge JSON parsing, sweep, report text, load test statistics) are covered by tests that use fake data.
 
 ## Not built yet
 - Real Jira and Active Directory (the n8n workflows are mocks)
 - Intent classification beyond the keyword check that decides when to offer tools
 - Saving conversations and messages (the tables exist, nothing writes to them)
-- Login: every request is the default employee, so the owner check only separates users once `current_user_email` returns real ones
-- Authentication for the admin dashboard and output guardrails on the answer
+- Password reset by email, changing your own password in the UI, token revocation (logout only clears the cookie), two-factor login, and different rights for agent and admin
+- Output guardrails on the answer
 
 ## Evaluation flow
 1. For each question, `retrieve` embeds it and runs hybrid search (1 embedding call). The best distance is kept, because the threshold sweep reuses it.
