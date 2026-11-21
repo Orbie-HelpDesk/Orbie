@@ -81,3 +81,4 @@ limit_tickets = rate_limit("tickets", "rate_limit_tickets_per_min")
 
 limit_actions = rate_limit("actions", "rate_limit_actions_per_min")
 limit_kb = rate_limit("kb", "rate_limit_kb_per_min")
+limit_audit = rate_limit("audit", "rate_limit_audit_per_min")

@@ -15,6 +15,8 @@ from datetime import date
 
 from sqlalchemy import text
 
+from . import audit
+from .db import engine
 from .timeutil import as_utc
 
 DEFAULT_PAGE_SIZE = 50
@@ -199,3 +201,17 @@ def build_query(filters: Filters, page: int, page_size: int):
         params["tz"] = filters.tz
     where = (" where " + " and ".join(conditions)) if conditions else ""
     return text(SELECT_SQL + where + ORDER_SQL), params
+
+
+def read_page(admin_id: int, filters: Filters, page: int, page_size: int) -> dict:
+    """One page of the log. The read is audited in the same transaction, and if that row cannot be
+    written the read fails and nothing is returned, so there is never an unlogged read.
+
+    The audit_viewed row has the actor only. It never holds the filters.
+    """
+    statement, params = build_query(filters, page, page_size)
+    with engine.begin() as conn:
+        rows = conn.execute(statement, params).mappings().all()
+        audit.record(audit.actor_for(admin_id), "audit_viewed", {}, conn=conn)
+    items, has_next = page_of(rows, page_size)
+    return {"items": items, "page": page, "page_size": page_size, "has_next": has_next}

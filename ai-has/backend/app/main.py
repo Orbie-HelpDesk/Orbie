@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import date
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -10,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import analytics, audit, chatlog, kb, llm, memory, proposals
+from . import analytics, audit, auditview, chatlog, kb, llm, memory, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -26,7 +27,7 @@ from .guardrails import check_input, redact_pii
 from .intent import ACTION_INTENTS, OUT_OF_SCOPE, UNKNOWN, classify
 from .passwords import MAX_PASSWORD_LENGTH
 from .rag import answer, propose_action
-from .ratelimit import limit_actions, limit_chat, limit_kb, limit_tickets
+from .ratelimit import limit_actions, limit_audit, limit_chat, limit_kb, limit_tickets
 from .sessions import COOKIE_NAME, create_token, lifetime_seconds, secret_ok
 from .tickets import create_ticket, get_stats, list_tickets, update_status
 from .timeutil import check_timezone
@@ -601,3 +602,28 @@ def kb_save(source: str, req: KbSave, response: Response, admin: dict = Depends(
 @app.delete("/kb/{source}", dependencies=[Depends(limit_kb)])
 def kb_delete(source: str, admin: dict = Depends(require_admin)):
     return kb.delete_article(source, audit.actor_for(admin["id"]))
+
+
+# ---------- Audit log (admin only) ----------
+@app.get("/audit", dependencies=[Depends(limit_audit)])
+def audit_log(
+    response: Response,
+    admin: dict = Depends(require_admin),  # first, so a refused user never reaches a query
+    page: int = Query(1, ge=1, le=auditview.MAX_PAGE),
+    page_size: int = Query(auditview.DEFAULT_PAGE_SIZE, ge=1, le=auditview.MAX_PAGE_SIZE),
+    action: str | None = Query(None, max_length=60, pattern=auditview.ACTION_RE.pattern),
+    actor: str | None = Query(None, max_length=auditview.MAX_ACTOR_FILTER),
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    tz: str = Depends(time_zone),
+):
+    """The audit log, newest first. Only checked fields and a safe summary are returned, never a payload.
+
+    Reading it writes an audit_viewed row (the actor only, never the filters).
+    """
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="The start date must not be after the end date.")
+    filters = auditview.Filters(action, (actor or "").strip() or None, date_from, date_to, tz)
+    result = auditview.read_page(admin["id"], filters, page, page_size)
+    response.headers["Cache-Control"] = "no-store"
+    return result
