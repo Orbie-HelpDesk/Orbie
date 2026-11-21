@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     intent_confidence_threshold: float = 0.75  # below this the rules are not sure enough
     history_turns: int = 4  # earlier exchanges (a question and its answer) sent with a question. 0 turns memory off
     intent_use_model: bool = True  # one small model call when the rules are not sure
+    kb_dir: str = "/kb"  # the folder with the markdown articles
     n8n_webhook_url: str = "http://localhost:5678/webhook"
     n8n_webhook_secret: str = ""
     n8n_timeout_seconds: float = 5.0
