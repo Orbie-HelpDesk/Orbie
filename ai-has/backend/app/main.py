@@ -1,17 +1,22 @@
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import proposals
+from . import audit, proposals
+from .auth import authenticate, current_user, user_from_request
+from .config import settings
 from .db import engine
 from .guardrails import check_input, redact_pii
+from .passwords import MAX_PASSWORD_LENGTH
 from .rag import answer, propose_action
 from .ratelimit import limit_actions, limit_chat, limit_tickets
+from .sessions import COOKIE_NAME, create_token, lifetime_seconds, secret_ok
 from .tickets import DEFAULT_USER, create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
@@ -24,6 +29,29 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 GENERIC_ERROR = "Something went wrong. Please try again."
+
+
+STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.middleware("http")
+async def json_only_and_same_origin(request: Request, call_next):
+    """Blocks simple cross-site form posts.
+
+    Every state-changing request must be JSON, which a plain HTML form cannot send, and if
+    the browser sends an Origin header it must be this site. Defined before the middleware
+    below so that one stays outermost and its security headers also cover these answers.
+    """
+    if request.method in STATE_CHANGING:
+        if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "Requests that change data must be JSON (Content-Type: application/json)."},
+            )
+        origin = request.headers.get("origin")
+        if origin and urlparse(origin).netloc != request.headers.get("host", ""):
+            return JSONResponse(status_code=403, content={"detail": "Cross-site requests are not allowed."})
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -79,6 +107,11 @@ class StatusUpdate(BaseModel):
     status: str
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
 class ConfirmRequest(BaseModel):
     action_id: str = Field(min_length=10, max_length=100)
     confirm: bool
@@ -100,6 +133,40 @@ def home():
 @app.get("/admin")
 def admin():
     return FileResponse(ADMIN_DIR / "admin.html", headers=NO_CACHE)
+
+
+def _cookie_flags() -> dict:
+    return {"path": "/", "httponly": True, "samesite": "lax", "secure": settings.cookie_secure}
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest, request: Request, response: Response):
+    if not secret_ok():
+        raise HTTPException(
+            status_code=503, detail="Login is not configured. Set SESSION_SECRET (at least 32 characters)."
+        )
+    ip = request.client.host if request.client else "unknown"
+    user = authenticate(req.email, req.password, ip)
+    response.set_cookie(COOKIE_NAME, create_token(user["id"]), max_age=lifetime_seconds(), **_cookie_flags())
+    response.headers["Cache-Control"] = "no-store"
+    return user
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response):
+    """Clears the cookie. The signed token itself stays valid until it expires."""
+    user = user_from_request(request)
+    if user:
+        audit.record(audit.actor_for(user["id"]), "logout", {})
+    response.delete_cookie(COOKIE_NAME, **_cookie_flags())
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/me")
+def me(response: Response, user: dict = Depends(current_user)):
+    response.headers["Cache-Control"] = "no-store"
+    return user
 
 
 @app.get("/stats")
