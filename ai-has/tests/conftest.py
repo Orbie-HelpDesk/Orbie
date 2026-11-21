@@ -27,3 +27,11 @@ def login_as():
 
     yield _set
     main.app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.fixture(autouse=True)
+def no_chat_saving_by_default(monkeypatch):
+    """Tests never reach a database. The tests about saving switch this on and stub the database."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "persist_chats", False)

@@ -11,7 +11,7 @@ import secrets
 
 from sqlalchemy import text
 
-from . import actions
+from . import actions, chatlog
 from .db import engine
 from .guardrails import check_input, redact_pii
 from .tickets import PRIORITIES, resolve_user
@@ -61,6 +61,15 @@ def _label(name: str, arguments: dict) -> str:
     return "Send a password reset link to your account"
 
 
+def attach_conversation(action_id: str, conversation_id: int) -> None:
+    """Links a stored proposal to the conversation it came from, once that conversation exists."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("update pending_actions set conversation_id = :c where id = :id"),
+            {"c": conversation_id, "id": action_id},
+        )
+
+
 def propose(user_email: str, name: str, arguments: dict | None) -> dict | None:
     """Stores a proposal for this user. Returns what the UI shows, or None if it is not valid."""
     clean = clean_arguments(name, arguments)
@@ -85,14 +94,18 @@ def _claim(conn, action_id: str, user_id: int, new_status: str) -> dict:
         text(
             "update pending_actions set status = :s, decided_at = now() "
             "where id = :id and owner_user_id = :u and status = 'pending' and expires_at > now() "
-            "returning name, arguments"
+            "returning name, arguments, conversation_id"
         ),
         {"s": new_status, "id": action_id, "u": user_id},
     )
     if res.rowcount == 1:
         row = res.mappings().first()
         args = row["arguments"]
-        return {"name": row["name"], "arguments": args if isinstance(args, dict) else json.loads(args)}
+        return {
+            "name": row["name"],
+            "arguments": args if isinstance(args, dict) else json.loads(args),
+            "conversation_id": row.get("conversation_id"),
+        }
 
     # Not taken: find out why, so the answer is clear.
     why = conn.execute(
@@ -119,10 +132,13 @@ def _audit(conn, user_id: int, name: str, payload: dict) -> None:
     )
 
 
-def _run(name: str, arguments: dict, user: dict) -> dict:
+def _run(name: str, arguments: dict, user: dict, conversation_id: int | None = None) -> dict:
     """Executes a confirmed action. Returns {outcome, message, result, audit}."""
     if name == CREATE_TICKET:
-        result = actions.create_ticket_action(arguments["summary"], arguments["priority"], user["email"])
+        extra = {"conversation_id": conversation_id} if conversation_id is not None else {}
+        result = actions.create_ticket_action(arguments["summary"], arguments["priority"], user["email"], **extra)
+        if conversation_id is not None:
+            chatlog.mark_escalated(conversation_id)
         if result["jira_sync"] == "synced":
             message = f"Ticket {result['ref']} created and synced to Jira as {result['external_ref']}."
         else:
@@ -159,7 +175,7 @@ def decide(action_id: str, user_email: str, confirm: bool) -> dict:
         proposal = _claim(conn, action_id, user["id"], "confirmed")
 
     try:
-        done = _run(proposal["name"], proposal["arguments"], user)
+        done = _run(proposal["name"], proposal["arguments"], user, proposal.get("conversation_id"))
         payload = {"decision": "confirmed", "outcome": "done", **done["audit"]}
         response = {"status": "done", "name": proposal["name"], "message": done["message"], "result": done["result"]}
     except actions.ActionError as e:

@@ -12,7 +12,8 @@ Capstone project: Applied Generative AI for IT Solution Development.
 - **Tickets:** when the answer is "not found", the "Create a ticket" button creates a real ticket. Ticket text is also PII-redacted.
 - **Actions with confirmation:** Orbie can propose opening a ticket (with a mock Jira key from n8n) or sending a password reset link (mock Active Directory). It only proposes. A card with Confirm and Cancel appears, and nothing runs until you confirm. Every decision is written to `audit_logs`. See "Actions from chat" below.
 - **Login and roles:** everyone logs in. Employees can chat and create tickets. Only agents and admins see the dashboard. See "Login and roles" below.
-- **Admin dashboard** (`/admin`, agent or admin): ticket KPIs, a ticket list with a status filter, and status changes (open, in progress, resolved).
+- **History and feedback:** every chat is saved for its owner (redacted text only). The history panel loads from the server, and the thumbs up and down are saved. See "What is stored, and for how long".
+- **Admin dashboard** (`/admin`, agent or admin): ticket KPIs, a ticket list with a status filter, status changes (open, in progress, resolved), and an Analytics section with questions per day, deflection, response times, thumbs and top lists.
 - **Evaluation:** scripts that measure retrieval accuracy, deflection, escalation, guardrails and latency.
 
 If the best match is too far away (distance above 0.5) or the model replies NO_ANSWER, the API returns a "not found" message with `escalate=true`.
@@ -29,12 +30,17 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 | GET | `/auth/me` | The logged-in user `{id, email, name, role}`, or 401 |
 | GET | `/` | Chat page (any logged-in user, else redirect to `/login`) |
 | GET | `/admin` | Admin dashboard (agent or admin; employee gets 403, logged out is redirected) |
-| POST | `/chat` | Login required. Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`) |
+| POST | `/chat` | Login required. Body `{message, conversation_id?}`. Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`), and `conversation_id` and `message_id` (null if saving is off or failed). 404 if the conversation is not yours |
+| GET | `/conversations` | Your conversations, most recently active first (`?limit=`, 1 to 100) |
+| GET | `/conversations/{id}` | The messages of a conversation. The owner, or an agent or admin (audited). Anyone else gets 404 |
+| DELETE | `/conversations/{id}` | Owner only. Deletes the messages and the conversation, and unlinks its tickets (audited) |
+| PATCH | `/messages/{id}/feedback` | Body `{value}` with -1, 0 or 1. Only on assistant messages in your own conversations, else 404 |
 | POST | `/actions/confirm` | Login required. Body `{action_id, confirm}`. Runs (true) or drops (false) a proposed action. Only the owner can decide it, once. 403 other owner, 404 unknown, 409 already handled, 410 expired |
-| POST | `/tickets` | Login required. Create a ticket owned by you from `summary` (3 to 500 chars) and `priority` |
+| POST | `/tickets` | Login required. Create a ticket owned by you from `summary` (3 to 500 chars), `priority` and an optional `conversation_id` of your own chat |
 | GET | `/tickets` | Agent or admin. List tickets, optional `?status=` |
 | PATCH | `/tickets/{id}` | Agent or admin. Change status (audited) |
 | GET | `/stats` | Agent or admin. Ticket totals, by priority, average resolution hours |
+| GET | `/stats/analytics` | Agent or admin. `?days=` 1 to 365 (default 30). Chat analytics, see below |
 | GET | `/health` | App and database status (public) |
 | GET | `/docs` | API docs (public) |
 
@@ -82,6 +88,36 @@ The password is typed at a hidden prompt (twice). It is never taken from an argu
 **Before this reaches Supabase:** the team lead reviews the new column in `schema.sql`, applies it, and sets real passwords with `set_password`. Until then nobody there can log in.
 
 **Not built:** password reset by email, changing your own password in the UI, token revocation, per-role differences between agent and admin, and two-factor login.
+
+## What is stored, and for how long
+Every `POST /chat` is saved, so the history survives a new browser and the dashboard can show analytics.
+
+| What | Where | Notes |
+|---|---|---|
+| Conversation | `conversations` | The owner, a status (`open` or `escalated`) and a title made from the first question, already redacted |
+| Your question | `messages` (role `user`) | The PII-redacted text that the pipeline used, never the raw message |
+| Orbie's answer | `messages` (role `assistant`) | The text, the cited articles, a confidence (0 to 1, from the best match distance, same scale as the gauge in the chat), the whole request time in ms, an intent (`answered`, `escalated`, `action_proposed` or `blocked:<reason>`) and the `escalated` flag |
+| Thumbs up or down | `messages.feedback` | -1, 0 or 1, set only by the owner of the conversation |
+| A blocked message | `messages` | Saved as the placeholder `[blocked message]` with `blocked = true`. The raw text is never stored |
+| Tickets | `tickets.conversation_id` | A ticket made from the chat is linked to its conversation |
+| Who did what | `audit_logs` | Logins, ticket status changes, confirmed actions, `conversation_read` (staff reading someone else's chat), `conversation_deleted`, `messages_purged`. Conversation ids and counts only, never text |
+
+**Not stored:** the raw text of blocked messages, the id of a proposed action (it works like a one-time key, so a reloaded chat shows the text of a proposal but not its Confirm card), the match distances (only the confidence), passwords, and anything the redaction replaced.
+
+**Who can read it.** You can read, rate and delete your own conversations. Agents and admins can read any conversation by id, and each such read writes an audit row. Nobody can write into or delete someone else's conversation, and nobody but the owner can rate a message. Agents and admins also see the analytics, which show the redacted text of the most escalated questions. The redaction is pattern based and can miss a personal detail, so treat that list as internal.
+
+**If saving fails** (for example the new tables are not on the database yet) the chat still answers, and `conversation_id` in the response is null. Set `PERSIST_CHATS=false` to switch saving off completely. The in-process load test does this itself. For `--mode full`, start the server with `PERSIST_CHATS=false` or every request becomes a conversation. The evaluation runner calls the answer code directly, so it never logs in and never saves anything.
+
+**History in the chat page.** When logged in, the history panel shows the saved conversations from the server. If the server cannot be reached it falls back to the history kept in this browser, which is stored per user. Chats from the old browser-only history are not copied to the server. History loaded from the server has no match gauge, because the distances are not stored. The delete buttons delete the conversation on the server (its tickets stay, no longer linked to it).
+
+**Retention.** Nothing is removed automatically. To remove old text:
+```bash
+docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.purge_old --days 90 --dry-run
+docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.purge_old --days 90
+```
+For messages older than N days it replaces the text with `[purged]`, and for every conversation that has such a message it replaces the title too (the title comes from the first question). Rows, times, citations, confidence, latency, thumbs and the escalated flag stay, so the counts in the analytics survive, but the escalated question list drops purged questions. `--dry-run` only counts. It writes one `messages_purged` audit row with counts, refuses a database that is not `db` or `localhost` unless `--allow-remote` is given (only when the team lead has said to change data on Supabase), and prints counts only. It does not touch tickets, whose summaries are redacted but are business records, so they need their own retention decision.
+
+**Analytics.** `GET /stats/analytics?days=30` (agent or admin, 1 to 365 days) feeds the Analytics section of the dashboard: questions per day, the deflection rate (`answered / (answered + escalated)`, with blocked messages and proposed actions left out), median and 95th percentile response time, the thumbs-up share (`up / (up + down)`), the most cited articles and the most escalated questions.
 
 ## Quick start (Supabase)
 ```bash
@@ -132,11 +168,47 @@ Passing `--allow-remote` overrides the guard, for example `python -m app.init_db
 
 **Note:** `schema.sql` was written from `models.py` and from how `ingest.py` and `rag.py` use `kb_chunks`. It must match the real Supabase definition, which the team lead needs to verify. Do not run `init_db` against Supabase until that is done.
 
-**New table:** `pending_actions` (additive, `create table if not exists`) holds proposed actions. It exists only in the local database so far. The team lead should review it in `schema.sql` before it is applied to Supabase. Until then, on Supabase, a proposal cannot be stored, so `/chat` logs the error and gives the normal answer. `audit_logs.actor` now holds `user:<id>`, not an email.
-
-**New column:** `users.password_hash` (`alter table users add column if not exists`, additive). Same rule: review it first. Existing users keep working in the database but cannot log in until a password is set.
+Every change made after the first version (`pending_actions`, `users.password_hash`, and the chat persistence columns and indexes) is listed, with its exact statement, in "Schema changes not yet applied to Supabase" below. They exist only in the local database so far, and `audit_logs.actor` now holds `user:<id>`, `anonymous` or `cli`, never an email.
 
 Tickets are owned by the logged-in user. The old default, `employee@company.com` (or the first `employee` user with a logged warning), is only used when code creates a ticket without an email, for example in tests.
+
+## Schema changes not yet applied to Supabase
+Everything below is in `backend/schema.sql`, is additive and idempotent (`if not exists`), and has only been run on the local database. The team lead should review it and apply it once. Nothing changes or removes existing tables, columns or data.
+
+**Apply it with `psql`, not with `init_db`.** `init_db --allow-remote` would also insert the three demo users. This applies only the schema, and it can be run again safely:
+```bash
+psql "postgresql://USER:PASSWORD@HOST:5432/postgres" -f backend/schema.sql   # a plain postgresql:// URL: psql does not accept the +psycopg2 part of DATABASE_URL
+```
+Run it as one file, because the statements depend on each other in order (`pending_actions` must exist before the column added to it). The file also repeats the older `create table if not exists` statements, which do nothing where the tables exist. It was written from the code, so compare the older tables with the real Supabase definition first (see the note under "Database schema").
+
+| From | Change | Statement |
+|---|---|---|
+| Login (PR 10) | Password hash for each user. Existing users cannot log in until `python -m app.set_password` sets one | `alter table users add column if not exists password_hash varchar(255);` |
+| Actions with confirmation (PR 9) | New table for proposed actions | see below |
+| Chat persistence (this PR) | Title of a conversation | `alter table conversations add column if not exists title varchar(120);` |
+| This PR | Thumbs up or down | `alter table messages add column if not exists feedback smallint check (feedback in (-1, 0, 1));` |
+| This PR | Escalated flag | `alter table messages add column if not exists escalated boolean not null default false;` |
+| This PR | Blocked flag | `alter table messages add column if not exists blocked boolean not null default false;` |
+| This PR | Link from a proposed action to its conversation | `alter table pending_actions add column if not exists conversation_id integer references conversations (id) on delete set null;` |
+| This PR | Indexes for the history list and the analytics | `create index if not exists messages_conversation_idx on messages (conversation_id);` `create index if not exists messages_created_idx on messages (created_at);` `create index if not exists conversations_user_idx on conversations (user_id, created_at);` |
+
+The `pending_actions` table (PR 9):
+```sql
+create table if not exists pending_actions (
+    id varchar(64) primary key,
+    owner_user_id integer not null references users (id),
+    name varchar(40) not null,
+    arguments json,
+    status varchar(20) not null default 'pending',
+    created_at timestamp not null default now(),
+    expires_at timestamp not null,
+    decided_at timestamp
+);
+```
+Other things to know when applying it:
+- `audit_logs.actor` has no schema change, but its meaning did: new rows hold `user:<id>`, `anonymous` or `cli`, never an email. Old rows are not rewritten.
+- `conversations`, `messages`, `audit_logs` and `tickets.external_ref` already exist in the file from the first schema, so they are expected to exist on Supabase. If any of them is missing there, running the whole file creates it.
+- Until it is applied, the app keeps working on Supabase: saving a chat fails quietly (the chat still answers), proposals cannot be stored, and nobody can log in, because there are no passwords. After applying it, set passwords with `set_password --allow-remote`, one user at a time.
 
 ## Evaluation
 Two question sets:
@@ -171,7 +243,7 @@ It sends `-n` requests to `POST /chat` with `-c` concurrent workers and reports 
 - **retrieval-only**: real embedding and database search, no chat model. Spends one embedding call per request.
 - **full**: real requests to a running server, logged in as `--user` with the password from the `LOADTEST_PASSWORD` environment variable (login is required now). Spends up to one embedding and one chat call per request. Start that server with `RATE_LIMIT_ENABLED=false`, or the rate limit answers 429 (counted separately).
 
-The modes that spend quota refuse to run without `--yes`. The result is written as a marked "Load test" section of `report.md`, and `eval_run` keeps that section when it rewrites the report (`--no-report` skips it).
+The in-process modes never save conversations. For full mode start the server with `PERSIST_CHATS=false`, or every request is saved as a conversation. The modes that spend quota refuse to run without `--yes`. The result is written as a marked "Load test" section of `report.md`, and `eval_run` keeps that section when it rewrites the report (`--no-report` skips it).
 
 ## n8n workflows (mock Jira and Active Directory)
 Two workflows in `n8n/` back the actions the assistant can propose. Nothing real is called: the ticket workflow returns a made-up Jira key (`HELP-1234`) and the password workflow returns `{"status": "reset_link_sent"}`. No email is sent.
@@ -245,7 +317,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -255,7 +327,7 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
 - `frontend/chat/`, `frontend/admin/` and `frontend/login/`: the three pages (`chat/session.js` is shared by chat and admin)
 - `kb/`: IT knowledge base SOPs (markdown)
@@ -266,7 +338,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker buil
 ## Not built yet
 - Intent classification beyond the keyword check that decides when to offer tools
 - Real Jira and Active Directory (the workflows are mocks)
-- Saving conversations and messages to the database (chat history lives in the browser)
+- Copying the old browser-only history to the server, a list of everyone's conversations for staff, and automatic retention (`purge_old` is run by hand)
 - Password reset by email, token revocation and two-factor login (see Login and roles)
 
 ## Progress

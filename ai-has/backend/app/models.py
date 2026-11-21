@@ -1,6 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -27,6 +37,7 @@ class Conversation(Base):
     status: Mapped[str] = mapped_column(String(20), default="open")  # open | resolved | escalated
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(120), nullable=True)  # from the first redacted question
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation")
 
 
@@ -40,6 +51,9 @@ class Message(Base):
     citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feedback: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)  # -1, 0 or 1
+    escalated: Mapped[bool] = mapped_column(Boolean, default=False)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)  # content is a placeholder
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
@@ -86,3 +100,4 @@ class PendingAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)

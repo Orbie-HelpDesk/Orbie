@@ -55,9 +55,11 @@ function loadChats() {
 
 function persist() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(chats));
+    // Chats loaded from the server are not copied here. The browser copy is the fallback.
+    localStorage.setItem(STORE_KEY, JSON.stringify(chats.filter((c) => !c.fromServer)));
   } catch (e) {}
   renderHistory();
+loadServerList();
 }
 
 // ---------- Helpers ----------
@@ -218,20 +220,49 @@ function buildTrace(data) {
   return trace;
 }
 
-function buildFeedback() {
+// Thumbs up or down. The rating is saved on the server for the assistant message. Clicking the
+// chosen thumb again clears it. If the message was not saved (no id), it only thanks the user.
+function buildFeedback(record) {
+  const data = record.data;
   const fb = document.createElement("div");
   fb.className = "fb";
   fb.innerHTML = `<span>Was this helpful?</span>
     <button type="button" class="up" aria-label="Helpful">${icon("thumb")}</button>
     <button type="button" class="down flip" aria-label="Not helpful">${icon("thumb")}</button>`;
+  const label = fb.querySelector("span");
+  const up = fb.querySelector(".up");
+  const down = fb.querySelector(".down");
 
-  fb.querySelectorAll("button").forEach((btn) => {
-    btn.onclick = () => {
-      btn.classList.add("picked");
-      fb.querySelectorAll("button").forEach((b) => (b.disabled = true));
-      fb.querySelector("span").textContent = "Thanks for the feedback";
-    };
-  });
+  const show = (value) => {
+    up.classList.toggle("picked", value === 1);
+    down.classList.toggle("picked", value === -1);
+    label.textContent = value ? "Thanks for the feedback" : "Was this helpful?";
+  };
+  show(data.feedback || 0);
+
+  const rate = async (value) => {
+    const previous = data.feedback || 0;
+    const next = previous === value ? 0 : value;
+    data.feedback = next;
+    show(next);
+    persist();
+    if (!data.message_id) return;
+    try {
+      const res = await fetch("/messages/" + data.message_id + "/feedback", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: next }),
+      });
+      if (!res.ok) throw new Error(res.status);
+    } catch (err) {
+      data.feedback = previous;
+      show(previous);
+      label.textContent = "Could not save your rating";
+      persist();
+    }
+  };
+  up.onclick = () => rate(1);
+  down.onclick = () => rate(-1);
   return fb;
 }
 
@@ -264,7 +295,12 @@ function buildTicketButton(record) {
       const res = await fetch("/tickets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ summary, priority: "medium" }),
+        body: JSON.stringify({
+          summary,
+          priority: "medium",
+          // links the ticket to its saved conversation
+          ...(current && current.serverId ? { conversation_id: current.serverId } : {}),
+        }),
       });
       if (!res.ok) throw new Error(res.status);
       const ticket = await res.json();
@@ -399,7 +435,7 @@ function renderBot(m, animate, onDone) {
     } else if (d.escalate) {
       bubble.appendChild(buildTicketButton(m));
     } else if (!blocked && d.citations && d.citations.length) {
-      bubble.appendChild(buildFeedback());
+      bubble.appendChild(buildFeedback(m));
     }
     scrollDown();
     if (onDone) onDone();
@@ -463,13 +499,24 @@ async function ask(question) {
   setThinking(true);
   const thinking = showThinking();
 
-  let data;
-  try {
-    const res = await fetch("/chat", {
+  const sendChat = () =>
+    fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: question }),
+      body: JSON.stringify({
+        message: question,
+        ...(current.serverId ? { conversation_id: current.serverId } : {}),
+      }),
     });
+
+  let data;
+  try {
+    let res = await sendChat();
+    if (res.status === 404 && current.serverId) {
+      // The saved conversation is gone (deleted elsewhere): carry on in a new one
+      current.serverId = null;
+      res = await sendChat();
+    }
     if (res.status === 429) {
       data = {
         answer: "You're sending messages too quickly. Please wait a moment and try again.",
@@ -493,6 +540,7 @@ async function ask(question) {
   thinking.remove();
   setThinking(false);
 
+  if (data.conversation_id) current.serverId = data.conversation_id;
   const botMsg = { role: "bot", question, data, ts: Date.now() };
   current.messages.push(botMsg);
   persist();
@@ -503,6 +551,45 @@ async function ask(question) {
     sendBtn.disabled = false;
     inputEl.focus();
   });
+}
+
+// ---------- Server history ----------
+// The server stores times without a zone, in UTC
+function serverTime(value) {
+  if (!value) return Date.now();
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : value + "Z");
+  return Number.isNaN(t) ? Date.now() : t;
+}
+
+// When logged in, the saved conversations from the server are the history. If that fails, the
+// history kept in this browser is used instead.
+async function loadServerList() {
+  if (!window.aihasUser) return;
+  try {
+    const res = await fetch("/conversations");
+    if (!res.ok) throw new Error(res.status);
+    const list = await res.json();
+    const open = current && current.serverId;
+    chats = list.map((c) => ({
+      id: "s" + c.id,
+      serverId: c.id,
+      fromServer: true,
+      title: c.title,
+      ts: serverTime(c.last_at),
+      messages: null, // loaded when the chat is opened
+    }));
+    // A chat that is open right now keeps its messages
+    if (open) {
+      const same = chats.find((c) => c.serverId === open);
+      if (same) {
+        same.messages = current.messages;
+        current = same;
+      }
+    }
+    renderHistory();
+  } catch (err) {
+    // fall back to the browser history already loaded
+  }
 }
 
 // ---------- Chat history ----------
@@ -531,10 +618,41 @@ function newChat() {
   inputEl.focus();
 }
 
-function openChat(id) {
+// A saved message from the server, shaped like the records the page renders
+function fromServerMessage(m) {
+  const ts = serverTime(m.created_at);
+  if (m.role === "user") return { role: "user", text: m.content, ts };
+  return {
+    role: "bot",
+    question: "",
+    ts,
+    data: {
+      answer: m.content,
+      citations: m.citations || [],
+      escalate: !!m.escalated,
+      distances: [], // only the confidence is saved, so history shows no gauge
+      confidence: m.confidence,
+      message_id: m.id,
+      feedback: m.feedback || 0,
+      proposed_action: null,
+      guardrails: { blocked: !!m.blocked, reason: null, redacted: [] },
+    },
+  };
+}
+
+async function openChat(id) {
   if (busy) return;
   const chat = chats.find((c) => c.id === id);
   if (!chat) return;
+  if (chat.fromServer && !chat.messages) {
+    try {
+      const res = await fetch("/conversations/" + chat.serverId);
+      if (!res.ok) throw new Error(res.status);
+      chat.messages = (await res.json()).messages.map(fromServerMessage);
+    } catch (err) {
+      return; // keep the current view, the list stays as it is
+    }
+  }
   current = chat;
   streamEl.innerHTML = "";
   chat.messages.forEach((m) =>
@@ -545,8 +663,21 @@ function openChat(id) {
   scrollDown();
 }
 
-function deleteChat(id) {
+async function deleteChat(id) {
   if (busy) return;
+  const chat = chats.find((c) => c.id === id);
+  if (chat && chat.serverId) {
+    try {
+      const res = await fetch("/conversations/" + chat.serverId, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok && res.status !== 404) throw new Error(res.status);
+    } catch (err) {
+      return; // not deleted on the server, so it stays in the list
+    }
+  }
   chats = chats.filter((c) => c.id !== id);
   if (current && current.id === id) resetView();
   persist();
@@ -626,11 +757,25 @@ $("reset").onclick = newChat;
 
 clearBtn.onclick = () => footEl.classList.add("confirming");
 $("clearCancel").onclick = () => footEl.classList.remove("confirming");
-$("clearConfirm").onclick = () => {
+$("clearConfirm").onclick = async () => {
   if (busy) return;
-  chats = [];
-  resetView();
   footEl.classList.remove("confirming");
+  const saved = chats.filter((c) => c.serverId);
+  const results = await Promise.all(
+    saved.map((c) =>
+      fetch("/conversations/" + c.serverId, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+        .then((r) => r.ok || r.status === 404)
+        .catch(() => false)
+    )
+  );
+  // Keep the chats the server could not delete, so nothing silently comes back
+  const failed = new Set(saved.filter((_, i) => !results[i]).map((c) => c.id));
+  chats = chats.filter((c) => failed.has(c.id));
+  resetView();
   persist();
 };
 

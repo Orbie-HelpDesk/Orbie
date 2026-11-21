@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     session_hours: float = 4.0
     cookie_secure: bool = False
     demo_password: str = ""
+    persist_chats: bool = True
     login_max_failures_per_email: int = 5
     login_max_failures_per_ip: int = 20
     login_window_minutes: int = 10

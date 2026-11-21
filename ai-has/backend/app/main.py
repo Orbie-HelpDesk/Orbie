@@ -1,14 +1,16 @@
 import logging
+import time
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import audit, proposals
+from . import analytics, audit, chatlog, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -107,11 +109,13 @@ app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=Fal
 
 class ChatRequest(BaseModel):
     message: str
+    conversation_id: int | None = Field(default=None, ge=1)  # continue this conversation, or start one
 
 
 class TicketRequest(BaseModel):
     summary: str = Field(min_length=3, max_length=500)
     priority: str = "medium"
+    conversation_id: int | None = Field(default=None, ge=1)  # the chat this ticket came from
 
 
 class StatusUpdate(BaseModel):
@@ -121,6 +125,10 @@ class StatusUpdate(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class FeedbackRequest(BaseModel):
+    value: Literal[-1, 0, 1]  # -1 thumbs down, 1 thumbs up, 0 clears the rating
 
 
 class ConfirmRequest(BaseModel):
@@ -206,6 +214,12 @@ def stats():
     return get_stats()
 
 
+@app.get("/stats/analytics", dependencies=[Depends(require_staff)])
+def stats_analytics(days: int = Query(30, ge=1, le=365)):
+    """Questions per day, deflection, latency, thumbs, top articles and top escalated questions."""
+    return analytics.compute(days)
+
+
 @app.get("/health")
 def health():
     try:
@@ -232,14 +246,62 @@ def _store_proposal(user_email: str, clean_message: str) -> dict | None:
         return None
 
 
+def _check_conversation(conversation_id: int | None, user_id: int) -> bool:
+    """True if saving is on for this request. 404 if the conversation is not the caller's.
+
+    A database failure does not stop the chat: the request is answered without saving.
+    """
+    if not settings.persist_chats:
+        return False
+    if conversation_id is None:
+        return True
+    try:
+        owned = chatlog.owns(conversation_id, user_id)
+    except Exception:
+        logger.exception("Could not check the conversation, so this exchange is not saved")
+        return False
+    if not owned:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return True
+
+
+def _save_exchange(response: dict, user: dict, conversation_id: int | None, user_text: str, started: float, **fields) -> dict:
+    """Saves the exchange and adds conversation_id and message_id to the response (null if not saved)."""
+    response["conversation_id"] = None
+    response["message_id"] = None
+    if conversation_id == 0:  # saving is off for this request
+        return response
+    try:
+        saved = chatlog.save_exchange(
+            user["id"],
+            conversation_id,
+            user_text,
+            response["answer"],
+            citations=response["citations"],
+            confidence=chatlog.confidence_from_distances(response["distances"]),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            **fields,
+        )
+    except Exception:
+        logger.exception("Could not save the chat exchange")
+        return response
+    response.update(saved)
+    return response
+
+
 @app.post("/chat", dependencies=[Depends(limit_chat)])
 def chat(req: ChatRequest, user: dict = Depends(current_user)):
+    started = time.perf_counter()
     user_email = user["email"]
+    saving = _check_conversation(req.conversation_id, user["id"])
+    # 0 means "do not save". Otherwise the conversation to continue, or None to start one.
+    conversation_id = (req.conversation_id if saving else 0)
+
     # 1) Block injection attempts and oversized messages
     verdict = check_input(req.message)
     if verdict["blocked"]:
         print(f"[guardrail] blocked: {verdict['reason']}", flush=True)
-        return {
+        response = {
             "answer": verdict["message"],
             "citations": [],
             "escalate": False,
@@ -247,6 +309,11 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "proposed_action": None,
             "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": []},
         }
+        # The raw text is never saved, only a placeholder with the blocked flag
+        return _save_exchange(
+            response, user, conversation_id, "", started,
+            intent=chatlog.blocked_intent(verdict["reason"]), blocked=True,
+        )
 
     # 2) Hide personal data before it reaches the AI or the database
     clean, found = redact_pii(req.message)
@@ -258,7 +325,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     guardrails = {"blocked": False, "reason": None, "redacted": found}
     proposal = _store_proposal(user_email, clean)
     if proposal:
-        return {
+        response = {
             "answer": ACTION_MESSAGE,
             "citations": [],
             "escalate": False,
@@ -266,22 +333,46 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "proposed_action": proposal,
             "guardrails": guardrails,
         }
+        _save_exchange(response, user, conversation_id, clean, started, intent=chatlog.INTENT_ACTION)
+        if response["conversation_id"] is not None:
+            try:
+                proposals.attach_conversation(proposal["id"], response["conversation_id"])
+            except Exception:
+                logger.exception("Could not link the proposed action to its conversation")
+        return response
 
     # 4) Normal RAG flow, using only the cleaned text
     result = answer(clean)
     result["proposed_action"] = None
-    result["guardrails"] = {"blocked": False, "reason": None, "redacted": found}
-    return result
+    result["guardrails"] = guardrails
+    escalated = bool(result["escalate"])
+    return _save_exchange(
+        result, user, conversation_id, clean, started,
+        intent=chatlog.INTENT_ESCALATED if escalated else chatlog.INTENT_ANSWERED, escalated=escalated,
+    )
 
 
 @app.post("/tickets", dependencies=[Depends(limit_tickets)])
 def new_ticket(req: TicketRequest, user: dict = Depends(current_user)):
     # Personal data never gets saved into a ticket
     clean, found = redact_pii(req.summary)
+    extra = {}
+    if req.conversation_id is not None and settings.persist_chats:
+        try:
+            owned = chatlog.owns(req.conversation_id, user["id"])
+        except Exception:
+            logger.exception("Could not check the conversation, so the ticket is not linked to it")
+            owned = None
+        if owned is False:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if owned:
+            extra["conversation_id"] = req.conversation_id
     try:
-        ticket = create_ticket(clean, req.priority, source="escalation", user_email=user["email"])
+        ticket = create_ticket(clean, req.priority, source="escalation", user_email=user["email"], **extra)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if extra:
+        chatlog.mark_escalated(req.conversation_id)
     ticket["redacted"] = found
     return ticket
 
@@ -313,3 +404,42 @@ def confirm_action(req: ConfirmRequest, user: dict = Depends(current_user)):
         return proposals.decide(req.action_id, user["email"], req.confirm)
     except proposals.ProposalError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
+
+
+# ---------- Conversations and feedback ----------
+CONVERSATION_NOT_FOUND = "Conversation not found."
+
+
+@app.get("/conversations")
+def my_conversations(limit: int = Query(50, ge=1, le=100), user: dict = Depends(current_user)):
+    """The logged-in user's own conversations, the most recently active first."""
+    return chatlog.list_conversations(user["id"], limit)
+
+
+@app.get("/conversations/{conversation_id}")
+def read_conversation(conversation_id: int, user: dict = Depends(current_user)):
+    """The owner can read it, and so can an agent or admin. Anyone else gets 404."""
+    conversation = chatlog.get_conversation(conversation_id)
+    own = conversation is not None and conversation["user_id"] == user["id"]
+    if conversation is None or not (own or user["role"] in STAFF):
+        raise HTTPException(status_code=404, detail=CONVERSATION_NOT_FOUND)
+    if not own:
+        # Staff reading someone else's chat leaves a trace: who, and which conversation (no text)
+        audit.record(audit.actor_for(user["id"]), "conversation_read", {"conversation_id": conversation_id})
+    return conversation
+
+
+@app.delete("/conversations/{conversation_id}", dependencies=[Depends(limit_actions)])
+def delete_conversation(conversation_id: int, user: dict = Depends(current_user)):
+    """Deletes one of your own conversations. Its tickets stay, no longer linked to it."""
+    if not chatlog.delete_conversation(conversation_id, user["id"], audit.actor_for(user["id"])):
+        raise HTTPException(status_code=404, detail=CONVERSATION_NOT_FOUND)
+    return {"status": "deleted"}
+
+
+@app.patch("/messages/{message_id}/feedback", dependencies=[Depends(limit_actions)])
+def rate_message(message_id: int, req: FeedbackRequest, user: dict = Depends(current_user)):
+    """Thumbs up or down on an assistant message. Only in your own conversations."""
+    if not chatlog.set_feedback(message_id, user["id"], req.value):
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return {"message_id": message_id, "feedback": req.value}

@@ -89,6 +89,56 @@
         <div class="bars" id="bars"></div>
       </section>
 
+      <section class="panel" id="analytics">
+        <div class="panel-head">
+          <h2>Analytics</h2>
+          <div class="filters" id="periods" role="group" aria-label="Period">
+            <button class="chipbtn" data-d="7" type="button">7 days</button>
+            <button class="chipbtn on" data-d="30" type="button">30 days</button>
+            <button class="chipbtn" data-d="90" type="button">90 days</button>
+          </div>
+        </div>
+        <p class="a-note" id="a-note" hidden></p>
+
+        <div class="kpis a-kpis">
+        <div class="kpi" style="--i:0;--tint:#6c5ce7">
+          <span class="s-ico"><svg class="icon" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></span>
+          <div><small>Questions</small><b id="a-questions">-</b></div>
+        </div>
+        <div class="kpi" style="--i:1;--tint:#2fb86f">
+          <span class="s-ico"><svg class="icon" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <div><small>Answered without escalation</small><b id="a-deflection">-</b></div>
+        </div>
+        <div class="kpi" style="--i:2;--tint:#3b82f6">
+          <span class="s-ico"><svg class="icon" viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>
+          <div><small>Median response</small><b id="a-median">-</b></div>
+        </div>
+        <div class="kpi" style="--i:3;--tint:#ff7a59">
+          <span class="s-ico"><svg class="icon" viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/></svg></span>
+          <div><small>95th percentile</small><b id="a-p95">-</b></div>
+        </div>
+        <div class="kpi" style="--i:4;--tint:#d946a8">
+          <span class="s-ico"><svg class="icon" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></span>
+          <div><small>Thumbs up</small><b id="a-thumbs">-</b></div>
+        </div>
+        </div>
+
+        <h3 class="a-sub">Questions per day</h3>
+        <div class="chart" id="a-chart" role="img" aria-label="Questions per day"></div>
+
+        <div class="a-cols">
+          <div>
+            <h3 class="a-sub">Most cited articles</h3>
+            <div class="toplist" id="a-articles"></div>
+          </div>
+          <div>
+            <h3 class="a-sub">Most escalated questions</h3>
+            <div class="toplist" id="a-escalated"></div>
+          </div>
+        </div>
+        <p class="a-foot" id="a-foot"></p>
+      </section>
+
       <section class="panel">
         <h2>Tickets</h2>
         <div class="filters" id="filters">

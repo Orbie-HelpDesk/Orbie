@@ -92,6 +92,17 @@ create table if not exists pending_actions (
     decided_at timestamp
 );
 
+-- Added for chat persistence and feedback. Additive: nothing existing is changed or removed.
+alter table conversations add column if not exists title varchar(120);  -- from the first redacted question
+alter table messages add column if not exists feedback smallint check (feedback in (-1, 0, 1));  -- thumbs: -1 down, 0 none, 1 up
+alter table messages add column if not exists escalated boolean not null default false;
+alter table messages add column if not exists blocked boolean not null default false;  -- content is a placeholder, not the raw text
+alter table pending_actions add column if not exists conversation_id integer references conversations (id) on delete set null;
+
+create index if not exists messages_conversation_idx on messages (conversation_id);
+create index if not exists messages_created_idx on messages (created_at);
+create index if not exists conversations_user_idx on conversations (user_id, created_at);
+
 -- Cosine distance, matching the <=> operator used in rag.py.
 create index if not exists kb_chunks_embedding_idx
     on kb_chunks using hnsw (embedding vector_cosine_ops);
