@@ -14,6 +14,13 @@ flowchart LR
     NF --> FE
     FE -->|Create a ticket: POST /tickets| TK[Ticket service<br/>PII redacted]
     TK <--> DB
+    G1 -->|looks like an action request| TC[Tool calling<br/>model only proposes]
+    TC --> PA[(pending_actions)]
+    TC -->|proposed_action| FE
+    FE -->|Confirm or Cancel: POST /actions/confirm| CF[Atomic single use claim<br/>owner check]
+    CF --> N8[n8n webhooks<br/>mock Jira, mock AD]
+    CF --> AU[(audit_logs)]
+    CF --> TK
     AG[Admin dashboard<br/>/admin] -->|GET /tickets, /stats<br/>PATCH /tickets| API
     EV[Evaluation scripts] --> API
 ```
@@ -26,14 +33,18 @@ flowchart LR
 | Admin dashboard | HTML, CSS, JS in `frontend/admin/` | Ticket KPIs, list with status filter, status changes |
 | Rate limit and security | `ratelimit.py`, middleware in `main.py` | Per-IP rate limits on `/chat` and `/tickets`, security headers on every response, generic 500 for unhandled errors |
 | Guardrails | `guardrails.py` | Blocks prompt injection and over-long messages, redacts PII before the AI or the database sees it |
-| Tickets | `tickets.py` | Create, list, change status, KPI stats |
-| Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets (messages, conversations and audit_logs tables are defined but not written yet) |
+| Tickets | `tickets.py` | Create, list, change status, KPI stats, save the Jira key |
+| Actions | `actions.py` | Calls the n8n webhooks (5 second timeout, optional secret header, clear errors). Creates the local ticket first, so a Jira outage leaves it pending |
+| Proposals | `proposals.py` | Validates and stores what the model proposed, confirms or cancels it atomically for its owner, writes `audit_logs` |
+| Tool calling | `rag.py` (`propose_action`) | Two tools, `create_ticket` and `request_password_reset`. The model can only propose. Rule-based fallback if tool calling fails |
+| n8n | `n8nio/n8n`, compose profile `n8n`, `n8n/*.json` | Mock Jira key and mock Active Directory reset. Published on 127.0.0.1:5678 only |
+| Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets, `pending_actions` and `audit_logs` (messages and conversations are defined but not written yet) |
 | LLM | Gemini via OpenAI-compatible endpoint | Embeddings and answers; model names come from `.env` |
 | Local test DB | `pgvector/pgvector:pg16`, compose profile `local-db` | Testing without touching Supabase |
 | Evaluation | `eval_run.py`, `eval_judge.py`, `eval_metrics.py`, `eval_report.py`, `eval_generate.py` | Generated and hand-written hard question sets, retrieval accuracy, deflection, escalation, guardrails, LLM-judged faithfulness and relevance, MAX_DISTANCE sweep, retries and resumable runs |
 | Load test | `loadtest.py` | Requests per second, error rate and latency percentiles for `POST /chat`, in mock, retrieval-only or full mode |
 
-Docker compose runs one service, `backend`, plus `db` under the `local-db` profile. There is no ChromaDB and no n8n container.
+Docker compose runs one service, `backend`, plus `db` under the `local-db` profile and `n8n` under the `n8n` profile. There is no ChromaDB.
 
 ## Request flow: chat
 0. Every request first passes the middleware (security headers, generic 500 on unhandled errors). `POST /chat` and `POST /tickets` also pass the per-IP rate limit and get 429 when over it.
@@ -44,23 +55,32 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 5. Otherwise the closest chunks go to Gemini with a prompt that allows answers only from that context.
 6. If the model replies NO_ANSWER, the API returns "not found" with `escalate=true`. Else it returns the answer, citations, distances and what was redacted.
 
+## Request flow: actions
+1. After the guardrails, if the cleaned message matches a keyword check, one extra model call offers the two tools. A message that does not match costs nothing extra.
+2. If the model calls a tool (or the rule-based fallback matches because the call failed), the arguments are validated and redacted and stored in `pending_actions` with an unguessable id, the owner and a 10 minute expiry. `/chat` returns `proposed_action` and no knowledge base answer. Nothing has run.
+3. The chat page shows Confirm and Cancel. `POST /actions/confirm` sends only the id.
+4. One `UPDATE ... WHERE id AND owner AND status = 'pending' AND not expired` claims the proposal. Row count 1 means this call owns it. Otherwise the answer is 403 (other owner), 404, 409 (already handled) or 410 (expired).
+5. A confirmed ticket is saved locally, then n8n returns a Jira key stored in `tickets.external_ref`. If n8n is down the ticket stays and the Jira sync is reported as pending. A password reset needs n8n and reports a clear error without it.
+6. An `audit_logs` row is written for every confirm and cancel: actor `user:<id>`, action, and a payload with decision and outcome but no email, name or ticket text.
+
 ## Request flow: tickets
 1. On a not-found answer the chat page shows "Create a ticket". It sends the question (trimmed to 500 characters) to `POST /tickets`.
 2. The summary is PII-redacted, then saved with source `escalation`. The ticket belongs to `employee@company.com`, or to the first `employee` user with a logged warning if that user is missing.
 3. The page shows the ticket reference (for example `TCK-0002`). The admin dashboard shows it through `GET /tickets` and `GET /stats`.
 
 ## Database
-Tables: `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`. See `backend/schema.sql`, which must be verified against the real Supabase definition.
+Tables: `users`, `conversations`, `messages`, `tickets`, `kb_documents`, `kb_chunks`, `audit_logs`, `pending_actions` (new, additive, to be reviewed by the team lead before it is applied to Supabase). See `backend/schema.sql`, which must be verified against the real Supabase definition.
 
 Scripts that write data (`init_db`, `ingest`) run only when the `DATABASE_URL` host is `db` or `localhost`, unless `--allow-remote` is passed (`safety.py`). Schema changes must be additive and idempotent.
 
 ## Testing and CI
-`pytest` runs without Gemini or a real database by stubbing the engine. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`. Their helpers (scoring, judge JSON parsing, sweep, report text, load test statistics) are covered by tests that use fake data.
+`pytest` runs without Gemini or a real database by stubbing the engine. The action tests use a fake n8n (a stand-in for `httpx.post`), a fake model client and an in-memory fake of `pending_actions` and `audit_logs`. GitHub Actions runs ruff, pytest and a backend `docker build` on every pull request and on pushes to `main`, with no secrets. The check is advisory unless branch protection is enabled on `main`. The evaluation scripts are separate: they call Gemini and the database, and write `backend/app/eval_data/report.md`. Their helpers (scoring, judge JSON parsing, sweep, report text, load test statistics) are covered by tests that use fake data.
 
 ## Not built yet
-- n8n workflows and mock Jira or Active Directory actions
-- Intent classification and function calling
-- Saving conversations, messages and audit logs (tables exist, nothing writes to them)
+- Real Jira and Active Directory (the n8n workflows are mocks)
+- Intent classification beyond the keyword check that decides when to offer tools
+- Saving conversations and messages (the tables exist, nothing writes to them)
+- Login: every request is the default employee, so the owner check only separates users once `current_user_email` returns real ones
 - Authentication for the admin dashboard and output guardrails on the answer
 
 ## Evaluation flow
