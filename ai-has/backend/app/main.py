@@ -1,9 +1,10 @@
 import logging
 import time
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -124,6 +125,10 @@ class StatusUpdate(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class FeedbackRequest(BaseModel):
+    value: Literal[-1, 0, 1]  # -1 thumbs down, 1 thumbs up, 0 clears the rating
 
 
 class ConfirmRequest(BaseModel):
@@ -393,3 +398,42 @@ def confirm_action(req: ConfirmRequest, user: dict = Depends(current_user)):
         return proposals.decide(req.action_id, user["email"], req.confirm)
     except proposals.ProposalError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
+
+
+# ---------- Conversations and feedback ----------
+CONVERSATION_NOT_FOUND = "Conversation not found."
+
+
+@app.get("/conversations")
+def my_conversations(limit: int = Query(50, ge=1, le=100), user: dict = Depends(current_user)):
+    """The logged-in user's own conversations, the most recently active first."""
+    return chatlog.list_conversations(user["id"], limit)
+
+
+@app.get("/conversations/{conversation_id}")
+def read_conversation(conversation_id: int, user: dict = Depends(current_user)):
+    """The owner can read it, and so can an agent or admin. Anyone else gets 404."""
+    conversation = chatlog.get_conversation(conversation_id)
+    own = conversation is not None and conversation["user_id"] == user["id"]
+    if conversation is None or not (own or user["role"] in STAFF):
+        raise HTTPException(status_code=404, detail=CONVERSATION_NOT_FOUND)
+    if not own:
+        # Staff reading someone else's chat leaves a trace: who, and which conversation (no text)
+        audit.record(audit.actor_for(user["id"]), "conversation_read", {"conversation_id": conversation_id})
+    return conversation
+
+
+@app.delete("/conversations/{conversation_id}", dependencies=[Depends(limit_actions)])
+def delete_conversation(conversation_id: int, user: dict = Depends(current_user)):
+    """Deletes one of your own conversations. Its tickets stay, no longer linked to it."""
+    if not chatlog.delete_conversation(conversation_id, user["id"], audit.actor_for(user["id"])):
+        raise HTTPException(status_code=404, detail=CONVERSATION_NOT_FOUND)
+    return {"status": "deleted"}
+
+
+@app.patch("/messages/{message_id}/feedback", dependencies=[Depends(limit_actions)])
+def rate_message(message_id: int, req: FeedbackRequest, user: dict = Depends(current_user)):
+    """Thumbs up or down on an assistant message. Only in your own conversations."""
+    if not chatlog.set_feedback(message_id, user["id"], req.value):
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return {"message_id": message_id, "feedback": req.value}

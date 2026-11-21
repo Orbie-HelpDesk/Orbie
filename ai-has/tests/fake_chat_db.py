@@ -24,6 +24,8 @@ class FakeChatDb:
     def __init__(self):
         self.conversations = {}  # id -> dict
         self.messages = []  # dicts with id, conversation_id, role, content, ...
+        self.tickets = {}  # ticket id -> conversation id
+        self.audit = []
         self.broken = False
         self._next_conversation = 1
         self._next_message = 1
@@ -74,4 +76,43 @@ class FakeChatConn:
         if "update conversations set status = 'escalated'" in sql:
             db.conversations[params["c"]]["status"] = "escalated"
             return Result(rowcount=1)
+        if "update messages set feedback" in sql:
+            msg = next((m for m in db.messages if m["id"] == params["m"]), None)
+            owner = db.conversations.get(msg["conversation_id"], {}).get("user_id") if msg else None
+            if msg and msg["role"] == "assistant" and owner == params["u"]:
+                msg["feedback"] = params["v"]
+                return Result(rowcount=1)
+            return Result(rowcount=0)
+        if "from conversations c where c.user_id" in sql:
+            rows = []
+            for c in db.conversations.values():
+                if c["user_id"] != params["u"]:
+                    continue
+                mine = [m for m in db.messages if m["conversation_id"] == c["id"]]
+                rows.append({
+                    "id": c["id"], "title": c["title"], "status": c["status"], "created_at": c.get("created_at", "t0"),
+                    "questions": sum(1 for m in mine if m["role"] == "user"),
+                    "last_at": mine[-1]["id"] if mine else None,
+                })
+            rows.sort(key=lambda r: (r["last_at"] is not None, r["last_at"] or 0, r["id"]), reverse=True)
+            return Result(rows=rows[: params["n"]])
+        if "select id, user_id, title, status, created_at from conversations" in sql:
+            c = db.conversations.get(params["c"])
+            return Result(rows=[{**c, "created_at": c.get("created_at", "t0")}] if c else [])
+        if "from messages where conversation_id = :c order by id" in sql:
+            return Result(rows=[m for m in db.messages if m["conversation_id"] == params["c"]])
+        if "update tickets set conversation_id = null" in sql:
+            for tid, cid in db.tickets.items():
+                if cid == params["c"]:
+                    db.tickets[tid] = None
+            return Result()
+        if "delete from messages" in sql:
+            db.messages = [m for m in db.messages if m["conversation_id"] != params["c"]]
+            return Result()
+        if "delete from conversations" in sql:
+            db.conversations.pop(params["c"], None)
+            return Result()
+        if "insert into audit_logs" in sql:
+            db.audit.append({"actor": params["a"], "action": params["n"], "payload": json.loads(params["p"])})
+            return Result()
         raise AssertionError(f"unexpected sql: {sql}")
