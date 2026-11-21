@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_chat_per_min: int = 20
     rate_limit_tickets_per_min: int = 10
+    rate_limit_actions_per_min: int = 20
 
 
 settings = Settings()

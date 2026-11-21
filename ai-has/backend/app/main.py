@@ -7,11 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from . import proposals
 from .db import engine
 from .guardrails import check_input, redact_pii
 from .rag import answer
-from .ratelimit import limit_chat, limit_tickets
-from .tickets import create_ticket, get_stats, list_tickets, update_status
+from .ratelimit import limit_actions, limit_chat, limit_tickets
+from .tickets import DEFAULT_USER, create_ticket, get_stats, list_tickets, update_status
 
 app = FastAPI(title="AI-HAS", version="0.2.0")
 
@@ -76,6 +77,19 @@ class TicketRequest(BaseModel):
 
 class StatusUpdate(BaseModel):
     status: str
+
+
+class ConfirmRequest(BaseModel):
+    action_id: str = Field(min_length=10, max_length=100)
+    confirm: bool
+
+
+def current_user_email() -> str:
+    """Who is asking. There is no login yet, so this is the default employee.
+
+    This is the one place to change when real authentication is added.
+    """
+    return DEFAULT_USER
 
 
 @app.get("/")
@@ -155,3 +169,16 @@ def change_ticket(ticket_id: int, req: StatusUpdate):
     if result is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return result
+
+
+@app.post("/actions/confirm", dependencies=[Depends(limit_actions)])
+def confirm_action(req: ConfirmRequest, user_email: str = Depends(current_user_email)):
+    """Runs (confirm=true) or drops (confirm=false) an action the assistant proposed.
+
+    Only the id comes from the client. What runs was stored when the action was proposed,
+    and only its owner can decide it, once.
+    """
+    try:
+        return proposals.decide(req.action_id, user_email, req.confirm)
+    except proposals.ProposalError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
