@@ -124,7 +124,125 @@ async function loadTickets() {
   });
 }
 
+// ---------- Analytics ----------
+let days = 30;
+const SVG = "http://www.w3.org/2000/svg";
+
+const pct = (v) => (v === null ? "-" : Math.round(v * 100) + "%");
+const ms = (v) => (v === null ? "-" : v >= 1000 ? (v / 1000).toFixed(1) + " s" : v + " ms");
+
+function svgEl(name, attrs, text) {
+  const el = document.createElementNS(SVG, name);
+  Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, v));
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// Bar chart of questions per day, drawn as plain SVG (no library)
+function drawDaily(series) {
+  const host = $("a-chart");
+  host.innerHTML = "";
+  const W = 720, H = 190, left = 30, right = 6, top = 10, bottom = 24;
+  const max = Math.max(1, ...series.map((p) => p.count));
+  const plotW = W - left - right, plotH = H - top - bottom;
+  const slot = plotW / series.length;
+  const barW = Math.max(2, slot * 0.7);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
+  [0, 0.5, 1].forEach((f) => {
+    const y = top + plotH * (1 - f);
+    svg.appendChild(svgEl("line", { x1: left, x2: W - right, y1: y, y2: y, class: "grid" }));
+    svg.appendChild(svgEl("text", { x: left - 6, y: y + 4, "text-anchor": "end" }, Math.round(max * f)));
+  });
+
+  series.forEach((p, i) => {
+    const h = (p.count / max) * plotH;
+    const rect = svgEl("rect", {
+      x: left + i * slot + (slot - barW) / 2,
+      y: top + plotH - h,
+      width: barW,
+      height: Math.max(h, p.count ? 1 : 0),
+      rx: 2,
+      class: "bar" + (p.count ? "" : " zero"),
+    });
+    rect.appendChild(svgEl("title", {}, p.day + ": " + p.count + (p.count === 1 ? " question" : " questions")));
+    svg.appendChild(rect);
+  });
+
+  // a few date labels along the bottom: first, middle and last day
+  [0, Math.floor((series.length - 1) / 2), series.length - 1].forEach((i, n) => {
+    const anchor = n === 0 ? "start" : n === 2 ? "end" : "middle";
+    const x = left + i * slot + (n === 0 ? 0 : n === 2 ? slot : slot / 2);
+    svg.appendChild(svgEl("text", { x, y: H - 6, "text-anchor": anchor }, series[i].day.slice(5)));
+  });
+  host.appendChild(svg);
+  host.setAttribute(
+    "aria-label",
+    "Questions per day, last " + series.length + " days, " + series.reduce((n, p) => n + p.count, 0) + " in total"
+  );
+}
+
+// A short ranked list with a bar under each row. Text goes in with textContent.
+function drawTop(id, rows, labelOf, emptyText) {
+  const host = $(id);
+  host.innerHTML = "";
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "top-empty";
+    empty.textContent = emptyText;
+    host.appendChild(empty);
+    return;
+  }
+  const max = Math.max(...rows.map((r) => r.count));
+  rows.forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "top-row";
+    row.innerHTML =
+      '<div class="top-head"><span class="top-label"></span><b></b></div>' +
+      '<div class="track"><div class="fill medium"></div></div>';
+    row.querySelector(".top-label").textContent = labelOf(r);
+    row.querySelector("b").textContent = r.count;
+    host.appendChild(row);
+    const fill = row.querySelector(".fill");
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => (fill.style.width = (r.count / max) * 100 + "%"))
+    );
+  });
+}
+
+async function loadAnalytics() {
+  const note = $("a-note");
+  note.hidden = true;
+  const res = await fetch("/stats/analytics?days=" + days);
+  if (!res.ok) throw new Error(res.status);
+  const a = await res.json();
+
+  $("a-questions").textContent = a.totals.questions;
+  $("a-deflection").textContent = pct(a.deflection_rate);
+  $("a-median").textContent = ms(a.latency_ms.median);
+  $("a-p95").textContent = ms(a.latency_ms.p95);
+  $("a-thumbs").textContent = a.feedback.up_share === null ? "-" : pct(a.feedback.up_share);
+  $("a-thumbs").title = a.feedback.up + " up, " + a.feedback.down + " down";
+
+  drawDaily(a.questions_per_day);
+  drawTop("a-articles", a.top_articles, (r) => r.source, "No cited articles in this period.");
+  drawTop("a-escalated", a.top_escalated_questions, (r) => r.question, "Nothing was escalated in this period.");
+
+  $("a-foot").textContent =
+    "Last " + a.days + " days. Answered without escalation = answered / (answered + escalated). " +
+    a.totals.escalated + " escalated, " + a.totals.actions_proposed + " actions proposed, " +
+    a.totals.blocked + " blocked. Escalated questions are shown with personal data redacted, " +
+    "but redaction is automatic and may miss some.";
+}
+
+function analyticsFailed() {
+  const note = $("a-note");
+  note.textContent = "Could not load the analytics.";
+  note.hidden = false;
+}
+
 function refresh() {
+  loadAnalytics().catch(analyticsFailed);
   loadStats().catch(() => {});
   loadTickets().catch(() => {
     $("rows").innerHTML =
@@ -140,6 +258,16 @@ $("filters").querySelectorAll("button").forEach((b) => {
       .querySelectorAll("button")
       .forEach((x) => x.classList.toggle("on", x === b));
     loadTickets();
+  };
+});
+
+$("periods").querySelectorAll("button").forEach((b) => {
+  b.onclick = () => {
+    days = Number(b.dataset.d);
+    $("periods")
+      .querySelectorAll("button")
+      .forEach((x) => x.classList.toggle("on", x === b));
+    loadAnalytics().catch(analyticsFailed);
   };
 });
 
