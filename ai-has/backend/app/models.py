@@ -16,6 +16,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(20), default="employee")  # employee | agent | admin
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)  # pbkdf2_sha256$...
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

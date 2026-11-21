@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     rate_limit_chat_per_min: int = 20
     rate_limit_tickets_per_min: int = 10
     rate_limit_actions_per_min: int = 20
+    session_secret: str = ""
+    session_hours: float = 4.0
+    cookie_secure: bool = False
+    demo_password: str = ""
+    login_max_failures_per_email: int = 5
+    login_max_failures_per_ip: int = 20
+    login_window_minutes: int = 10
 
 
 settings = Settings()
