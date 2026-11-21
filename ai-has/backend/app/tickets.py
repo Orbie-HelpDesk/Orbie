@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from . import audit
 from .db import engine
+from .timeutil import as_utc
 
 PRIORITIES = {"low", "medium", "high"}
 STATUSES = {"open", "in_progress", "resolved"}
@@ -69,7 +70,7 @@ def create_ticket(
         "summary": summary,
         "status": row["status"],
         "priority": row["priority"],
-        "created_at": row["created_at"],
+        "created_at": as_utc(row["created_at"]),
     }
 
 
@@ -105,8 +106,8 @@ def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
             "priority": r["priority"],
             "status": r["status"],
             "source": r["source"],
-            "created_at": r["created_at"],
-            "resolved_at": r["resolved_at"],
+            "created_at": as_utc(r["created_at"]),
+            "resolved_at": as_utc(r["resolved_at"]),
             "requester": r["name"],
             "requester_email": r["email"],
         }
@@ -142,7 +143,7 @@ def update_status(ticket_id: int, status: str, actor: str | None = None) -> dict
         "id": row["id"],
         "ref": _ref(row["id"]),
         "status": row["status"],
-        "resolved_at": row["resolved_at"],
+        "resolved_at": as_utc(row["resolved_at"]),
     }
 
 
