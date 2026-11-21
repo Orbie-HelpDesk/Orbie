@@ -116,6 +116,7 @@ FRONTEND_DIR = Path("/frontend")
 CHAT_DIR = FRONTEND_DIR / "chat"
 ADMIN_DIR = FRONTEND_DIR / "admin"
 KB_PAGE_DIR = FRONTEND_DIR / "kb"
+AUDIT_PAGE_DIR = FRONTEND_DIR / "audit"
 LOGIN_DIR = FRONTEND_DIR / "login"
 
 # Chat page files: /static/styles.css, /static/app.js, /static/field.js
@@ -126,6 +127,9 @@ app.mount("/admin-assets", NoCacheStaticFiles(directory=ADMIN_DIR, check_dir=Fal
 
 # Knowledge base page files: /kb-assets/kb.css, /kb-assets/kb.js
 app.mount("/kb-assets", NoCacheStaticFiles(directory=KB_PAGE_DIR, check_dir=False), name="kb-assets")
+
+# Audit log page files: /audit-assets/audit.css, /audit-assets/audit.js
+app.mount("/audit-assets", NoCacheStaticFiles(directory=AUDIT_PAGE_DIR, check_dir=False), name="audit-assets")
 
 # Login page files: /login-assets/login.css, /login-assets/login.js
 app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=False), name="login-assets")
@@ -176,6 +180,9 @@ FORBIDDEN_KB_PAGE = FORBIDDEN_PAGE.replace(
 ).replace("<p><a href=\"/\">Back to the chat</a></p>", "<p><a href=\"/admin\">Back to the dashboard</a> or <a href=\"/\">the chat</a></p>")
 
 
+FORBIDDEN_AUDIT_PAGE = FORBIDDEN_KB_PAGE.replace("The knowledge base page is for admins only.", "The audit log is for admins only.")
+
+
 def _to_login(path: str) -> RedirectResponse:
     target = "/login" if path == "/" else f"/login?next={path}"
     return RedirectResponse(target, status_code=302, headers=NO_CACHE)
@@ -207,6 +214,17 @@ def kb_page(request: Request):
     if user["role"] != "admin":
         return HTMLResponse(FORBIDDEN_KB_PAGE, status_code=403, headers=NO_CACHE)
     return FileResponse(KB_PAGE_DIR / "kb.html", headers=NO_CACHE)
+
+
+@app.get("/admin/audit")
+def audit_page(request: Request):
+    """The audit log page. Admins only: an agent or an employee gets the 403 page."""
+    user = user_from_request(request)
+    if user is None:
+        return _to_login("/admin/audit")
+    if user["role"] != "admin":
+        return HTMLResponse(FORBIDDEN_AUDIT_PAGE, status_code=403, headers=NO_CACHE)
+    return FileResponse(AUDIT_PAGE_DIR / "audit.html", headers=NO_CACHE)
 
 
 @app.get("/login")

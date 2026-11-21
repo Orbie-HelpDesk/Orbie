@@ -57,9 +57,11 @@
       };
       slot.append(chip, out);
     }
-    // The knowledge base page is for admins only. The server enforces it too.
+    // The knowledge base page and the audit log are for admins only. The server enforces it too.
     const kbLink = document.getElementById("kbLink");
     if (kbLink && user.role === "admin") kbLink.hidden = false;
+    const auditLink = document.getElementById("auditLink");
+    if (auditLink && user.role === "admin") auditLink.hidden = false;
     const adminLink = document.getElementById("adminLink");
     if (adminLink && (user.role === "agent" || user.role === "admin")) adminLink.hidden = false;
   }
