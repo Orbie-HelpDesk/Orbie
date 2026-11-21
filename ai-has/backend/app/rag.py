@@ -118,11 +118,14 @@ def answer(
     chunks: list[dict] | None = None,
     history: list[dict] | None = None,
     retrieval_query: str | None = None,
+    keep_raw: bool = False,
 ) -> dict:
     """Pass chunks you already retrieved to skip a second search (used by the evaluation).
 
     history: earlier turns as chat messages, sent to the model before the question.
     retrieval_query: a standalone version of the question to search with (for a follow-up).
+    keep_raw: for the evaluation only. When the output check changed the answer, also return the
+        model's own reply as "raw_answer", so a person can see what was blocked. The API never sets it.
     """
     t0 = time.time()
     if chunks is None:
@@ -164,10 +167,11 @@ def answer(
 
     # Check the answer before it is shown (see guardrails.check_output)
     check = check_output(reply, context, sources, protected=PROTECTED_PROMPTS)
+    raw = {"raw_answer": reply} if keep_raw and check["action"] != "pass" else {}
     if check["action"] == "replaced":
-        return {"answer": REPLACED_MESSAGE, "citations": [], "escalate": False, "distances": distances, "output_check": check}
+        return {"answer": REPLACED_MESSAGE, "citations": [], "escalate": False, "distances": distances, "output_check": check, **raw}
     if check["action"] == "not_found":
-        return {"answer": NOT_FOUND_MESSAGE, "citations": [], "escalate": True, "distances": distances, "output_check": check}
+        return {"answer": NOT_FOUND_MESSAGE, "citations": [], "escalate": True, "distances": distances, "output_check": check, **raw}
     return {"answer": reply, "citations": sources, "escalate": False, "distances": distances, "output_check": check}
 
 

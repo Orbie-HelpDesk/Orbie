@@ -5,8 +5,10 @@ from .eval_metrics import (
     average,
     coverage,
     expected_list,
+    intent_summary,
     is_hit,
     markdown_table,
+    output_summary,
     pct,
     percentile,
     replace_section,
@@ -20,6 +22,8 @@ HOW_TO_READ = """\
 - **Out-of-scope correctly escalated**: questions the knowledge base cannot answer that got the "not found" reply.
 - **Guardrails**: injection attempts blocked, PII redacted, and harmless messages that were not blocked by mistake.
 - **Faithfulness** (0 to 1): is every claim in the answer supported by the retrieved article? **Relevance** (0 to 1): does the answer address the question? Both are scored by the same Gemini model that wrote the answers, which tends to favour its own wording, so treat them as a rough signal.
+- **Intent routing**: the intent the router gives each retrieval question (rules only by default, so no Gemini call), compared with hand-written labels. The labels were written from the question text before the router was run on the set, and the rules are not tuned to them.
+- **Output guardrail**: what the answer check did. "May have been wrongly blocked" counts questions with an expected article that was retrieved, where the check still sent the answer to not found. Those are the ones to read by hand.
 - **Threshold sweep**: uses retrieval distances only (no chat model). "Wrongly escalated" counts in-scope questions whose best match is farther than the threshold. "Wrongly answered" counts out-of-scope questions whose best match is at or inside it. The recommendation is the middle of the flat stretch with the fewest errors. It is advice, not a setting that was applied.
 - The generated set was written from the articles themselves, so it is easy. The hard set was written by hand before any results were seen and is not tuned. Misses are listed as they are.
 - The sets are small, so one question moves a percentage a lot. Latency includes the network round trip to Gemini."""
@@ -216,6 +220,59 @@ def sweep_section(sweep_rows: list[dict], recommendation: dict | None, current: 
     return "\n".join(parts + [""])
 
 
+def intent_section(records: list[dict]) -> str:
+    """Intent accuracy. Left out when no question has an expected_intent label."""
+    summary = intent_summary(records)
+    if summary is None:
+        return ""
+    total = summary["total"]
+    lines = [
+        "## Intent routing",
+        "",
+        f"Intent accuracy: **{summary['correct']} of {total}** ({_ratio(summary['correct'], total)}). "
+        "A question counts as correct when the intent is one of the accepted labels (two are accepted when both are fair).",
+        "",
+        f"Decided by the rules: {summary['sources']['rules']} of {total}. Not decided by the rules: "
+        f"{summary['sources']['fallback'] + summary['sources']['model']} of {total} "
+        "(these would cost one classifier call each in the app, or use the fallback here).",
+        "",
+        "| Category | Correct |",
+        "|---|---|",
+    ]
+    for category, (hit, count) in sorted(summary["by_category"].items()):
+        lines.append(f"| {category} | {hit} of {count} |")
+    if summary["misses"]:
+        lines += ["", "Wrong:"]
+        for r in summary["misses"]:
+            lines.append(
+                f"- {r['id']} expected {', '.join(expected_list(r['expected_intent']))}, got {r['intent']} "
+                f"({r['intent_source']}, {r['intent_confidence']})"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def output_section(records: list[dict]) -> str:
+    """What the output guardrail did, and answers it may have blocked wrongly."""
+    summary = output_summary(records)
+    if summary is None:
+        return ""
+    count, suspect = summary["count"], summary["suspect"]
+    lines = [
+        "## Output guardrail",
+        "",
+        f"Answers checked: {summary['checked']}. Passed: {count['pass']}. Replaced (PII, password, key or prompt text): "
+        f"{count['replaced']}. Sent to not found (no source or not supported by the retrieved text): {count['not_found']}.",
+        "",
+        f"Questions with an expected article that was retrieved and answered: {summary['eligible']}. "
+        f"Of those, answers that may have been wrongly blocked: **{len(suspect)}**.",
+    ]
+    for r in suspect + summary["replaced"]:
+        lines.append(f"- {r['id']} {r['output_action']}: {', '.join(r['output_reasons'])}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_report(
     date: str,
     header: str,
@@ -242,6 +299,9 @@ def build_report(
     ]
     for title, rag_records, guard_records, note in sets:
         parts.append(set_section(title, rag_records, guard_records, note))
+    for extra in (intent_section(judge_records), output_section(judge_records)):
+        if extra:
+            parts.append(extra)
     parts.append(judge_section(judge_records, judge_enabled))
     parts.append(sweep_section(sweep_rows, recommendation, current_threshold, sweep_count))
     report = "\n".join(parts).rstrip("\n") + "\n"

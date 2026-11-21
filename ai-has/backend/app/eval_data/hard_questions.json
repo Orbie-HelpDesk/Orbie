@@ -4,140 +4,172 @@
     "category": "typo_slang",
     "question": "my vpn wont conect from home",
     "in_scope": true,
-    "expected_source": "vpn-troubleshooting.md"
+    "expected_source": "vpn-troubleshooting.md",
+    "expected_intent": "vpn_issue"
   },
   {
     "id": "h02",
     "category": "typo_slang",
     "question": "pc is sooo laggy rn pls help",
     "in_scope": true,
-    "expected_source": "computer-restart-and-slow-pc.md"
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h03",
     "category": "typo_slang",
     "question": "cant login, forgot my pw lol",
     "in_scope": true,
-    "expected_source": "password-reset.md"
+    "expected_source": "password-reset.md",
+    "expected_intent": "password_reset"
   },
   {
     "id": "h04",
     "category": "typo_slang",
     "question": "wifi keeps droppin every 5 mins",
     "in_scope": true,
-    "expected_source": "wifi-troubleshooting.md"
+    "expected_source": "wifi-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h05",
     "category": "typo_slang",
     "question": "printr is jammed again ugh",
     "in_scope": true,
-    "expected_source": "printer-troubleshooting.md"
+    "expected_source": "printer-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h06",
     "category": "typo_slang",
     "question": "emial not workin on my fone",
     "in_scope": true,
-    "expected_source": "email-setup.md"
+    "expected_source": "email-setup.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h07",
     "category": "taglish",
     "question": "Hindi gumagana yung VPN ko, di ako makaconnect sa office network",
     "in_scope": true,
-    "expected_source": "vpn-troubleshooting.md"
+    "expected_source": "vpn-troubleshooting.md",
+    "expected_intent": "vpn_issue"
   },
   {
     "id": "h08",
     "category": "taglish",
     "question": "Nakalimutan ko yung password ko, paano ko ire-reset?",
     "in_scope": true,
-    "expected_source": "password-reset.md"
+    "expected_source": "password-reset.md",
+    "expected_intent": [
+      "password_reset",
+      "how_to"
+    ]
   },
   {
     "id": "h09",
     "category": "taglish",
     "question": "Ang bagal ng computer ko, ano ba dapat gawin?",
     "in_scope": true,
-    "expected_source": "computer-restart-and-slow-pc.md"
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h10",
     "category": "taglish",
     "question": "Di ako makaconnect sa wifi dito sa office",
     "in_scope": true,
-    "expected_source": "wifi-troubleshooting.md"
+    "expected_source": "wifi-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h11",
     "category": "taglish",
     "question": "Paano mag-setup ng work email sa phone ko?",
     "in_scope": true,
-    "expected_source": "email-setup.md"
+    "expected_source": "email-setup.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h12",
     "category": "taglish",
     "question": "Hindi nagpi-print yung printer namin, stuck yung document",
     "in_scope": true,
-    "expected_source": "printer-troubleshooting.md"
+    "expected_source": "printer-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h13",
     "category": "taglish",
     "question": "Pano ba mag-request ng access sa Figma? Kailangan ko kasi for work",
     "in_scope": true,
-    "expected_source": "software-access-request.md"
+    "expected_source": "software-access-request.md",
+    "expected_intent": [
+      "how_to",
+      "software_access"
+    ]
   },
   {
     "id": "h14",
     "category": "very_short",
     "question": "vpn",
     "in_scope": true,
-    "expected_source": "vpn-troubleshooting.md"
+    "expected_source": "vpn-troubleshooting.md",
+    "expected_intent": "vpn_issue"
   },
   {
     "id": "h15",
     "category": "very_short",
     "question": "wifi",
     "in_scope": true,
-    "expected_source": "wifi-troubleshooting.md"
+    "expected_source": "wifi-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h16",
     "category": "very_short",
     "question": "password",
     "in_scope": true,
-    "expected_source": "password-reset.md"
+    "expected_source": "password-reset.md",
+    "expected_intent": [
+      "how_to",
+      "password_reset"
+    ]
   },
   {
     "id": "h17",
     "category": "very_short",
     "question": "printer",
     "in_scope": true,
-    "expected_source": "printer-troubleshooting.md"
+    "expected_source": "printer-troubleshooting.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h18",
     "category": "very_short",
     "question": "email",
     "in_scope": true,
-    "expected_source": "email-setup.md"
+    "expected_source": "email-setup.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h19",
     "category": "very_short",
     "question": "slow pc",
     "in_scope": true,
-    "expected_source": "computer-restart-and-slow-pc.md"
+    "expected_source": "computer-restart-and-slow-pc.md",
+    "expected_intent": "how_to"
   },
   {
     "id": "h20",
     "category": "very_short",
     "question": "figma",
     "in_scope": true,
-    "expected_source": "software-access-request.md"
+    "expected_source": "software-access-request.md",
+    "expected_intent": [
+      "how_to",
+      "software_access"
+    ]
   },
   {
     "id": "h21",
@@ -147,6 +179,10 @@
     "expected_source": [
       "vpn-troubleshooting.md",
       "printer-troubleshooting.md"
+    ],
+    "expected_intent": [
+      "vpn_issue",
+      "how_to"
     ]
   },
   {
@@ -157,6 +193,10 @@
     "expected_source": [
       "password-reset.md",
       "wifi-troubleshooting.md"
+    ],
+    "expected_intent": [
+      "password_reset",
+      "how_to"
     ]
   },
   {
@@ -167,7 +207,8 @@
     "expected_source": [
       "computer-restart-and-slow-pc.md",
       "wifi-troubleshooting.md"
-    ]
+    ],
+    "expected_intent": "how_to"
   },
   {
     "id": "h24",
@@ -177,6 +218,10 @@
     "expected_source": [
       "software-access-request.md",
       "email-setup.md"
+    ],
+    "expected_intent": [
+      "software_access",
+      "how_to"
     ]
   },
   {
@@ -187,6 +232,10 @@
     "expected_source": [
       "password-reset.md",
       "printer-troubleshooting.md"
+    ],
+    "expected_intent": [
+      "password_reset",
+      "how_to"
     ]
   },
   {
@@ -194,21 +243,33 @@
     "category": "cross_topic",
     "question": "I can't open Figma, it says I don't have access",
     "in_scope": true,
-    "expected_source": "software-access-request.md"
+    "expected_source": "software-access-request.md",
+    "expected_intent": [
+      "software_access",
+      "how_to"
+    ]
   },
   {
     "id": "h27",
     "category": "cross_topic",
     "question": "Can't print because I don't have the print app installed, how do I request it?",
     "in_scope": true,
-    "expected_source": "software-access-request.md"
+    "expected_source": "software-access-request.md",
+    "expected_intent": [
+      "how_to",
+      "software_access"
+    ]
   },
   {
     "id": "h28",
     "category": "cross_topic",
     "question": "My email app locked me out after too many wrong passwords",
     "in_scope": true,
-    "expected_source": "password-reset.md"
+    "expected_source": "password-reset.md",
+    "expected_intent": [
+      "password_reset",
+      "how_to"
+    ]
   },
   {
     "id": "h29",
@@ -218,6 +279,10 @@
     "expected_source": [
       "vpn-troubleshooting.md",
       "password-reset.md"
+    ],
+    "expected_intent": [
+      "vpn_issue",
+      "password_reset"
     ]
   },
   {
@@ -228,56 +293,70 @@
     "expected_source": [
       "computer-restart-and-slow-pc.md",
       "wifi-troubleshooting.md"
-    ]
+    ],
+    "expected_intent": "how_to"
   },
   {
     "id": "h31",
     "category": "near_miss_out_of_scope",
     "question": "How many vacation days do I have left this year?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": "out_of_scope"
   },
   {
     "id": "h32",
     "category": "near_miss_out_of_scope",
     "question": "When is the next payroll release?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": "out_of_scope"
   },
   {
     "id": "h33",
     "category": "near_miss_out_of_scope",
     "question": "I lost my building ID card, how do I get a new one?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": "out_of_scope"
   },
   {
     "id": "h34",
     "category": "near_miss_out_of_scope",
     "question": "Can I get access to the server room on the 3rd floor?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": "out_of_scope"
   },
   {
     "id": "h35",
     "category": "near_miss_out_of_scope",
     "question": "How do I file a leave request for next week?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": "out_of_scope"
   },
   {
     "id": "h36",
     "category": "near_miss_out_of_scope",
     "question": "My laptop keyboard is broken, can I get a replacement?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": [
+      "out_of_scope",
+      "how_to"
+    ]
   },
   {
     "id": "h37",
     "category": "near_miss_out_of_scope",
     "question": "What are the office hours of the IT department?",
     "in_scope": false,
-    "expected_source": null
+    "expected_source": null,
+    "expected_intent": [
+      "out_of_scope",
+      "how_to"
+    ]
   },
   {
     "id": "h38",

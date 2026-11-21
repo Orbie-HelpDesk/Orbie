@@ -33,6 +33,52 @@ def with_retry(fn, tries: int = 4, base_delay: float = 2.0, sleep=time.sleep, no
             sleep(base_delay * 2**attempt)
 
 
+def intent_ok(expected, predicted: str) -> bool:
+    """True if the predicted intent is one of the accepted intents (a name, or a list when two are fair)."""
+    return predicted in expected_list(expected)
+
+
+def intent_summary(records: list[dict]) -> dict | None:
+    """Intent accuracy over the questions that have an expected_intent label. None if none do."""
+    labelled = [r for r in records if not r.get("error") and r.get("expected_intent") and r.get("intent")]
+    if not labelled:
+        return None
+    correct = [r for r in labelled if intent_ok(r["expected_intent"], r["intent"])]
+    by_category: dict[str, list[int]] = {}
+    for r in labelled:
+        hit, total = by_category.setdefault(r["category"], [0, 0])
+        by_category[r["category"]] = [hit + (1 if r in correct else 0), total + 1]
+    sources = {name: sum(1 for r in labelled if r.get("intent_source") == name) for name in ("rules", "model", "fallback")}
+    return {
+        "total": len(labelled),
+        "correct": len(correct),
+        "by_category": {k: tuple(v) for k, v in by_category.items()},
+        "sources": sources,
+        "misses": [r for r in labelled if r not in correct],
+    }
+
+
+def output_summary(records: list[dict]) -> dict | None:
+    """What the output check did, and which blocked answers may have been good ones. None if it never ran."""
+    checked = [r for r in records if not r.get("error") and r.get("output_action")]
+    if not checked:
+        return None
+    count = {name: sum(1 for r in checked if r["output_action"] == name) for name in ("pass", "replaced", "not_found")}
+    # A blocked answer is a possible wrong block when the question has an expected article, the model was
+    # given that article, and the check sent the answer to not found (it judged it ungrounded or empty).
+    suspect = [
+        r for r in checked
+        if r["output_action"] == "not_found" and r["in_scope"]
+        and is_hit(r["expected_source"], r.get("retrieved_sources", []))
+    ]
+    eligible = [
+        r for r in checked
+        if r["in_scope"] and is_hit(r["expected_source"], r.get("retrieved_sources", r.get("citations", [])))
+    ]
+    return {"checked": len(checked), "count": count, "eligible": len(eligible), "suspect": suspect,
+            "replaced": [r for r in checked if r["output_action"] == "replaced"]}
+
+
 def expected_list(expected) -> list[str]:
     if expected is None:
         return []
