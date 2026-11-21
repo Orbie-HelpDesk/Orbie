@@ -20,12 +20,12 @@ def chat(monkeypatch, login_as):
     monkeypatch.setattr(chatlog, "engine", db)
     state = {"db": db, "result": dict(ANSWERED), "answered": [], "attached": [], "tickets": []}
 
-    def fake_answer(q):
+    def fake_answer(q, history=None, retrieval_query=None):
         state["answered"].append(q)
         return dict(state["result"])
 
     monkeypatch.setattr(main, "answer", fake_answer)
-    monkeypatch.setattr(main, "propose_action", lambda q: None)
+    monkeypatch.setattr(main, "propose_action", lambda q, intent: None)
     monkeypatch.setattr(proposals, "attach_conversation", lambda aid, cid: state["attached"].append((aid, cid)))
     monkeypatch.setattr(
         main, "create_ticket",
@@ -79,7 +79,8 @@ def test_a_new_question_creates_a_conversation_with_both_messages(chat):
     assert bot_msg["citations"] == ["vpn.md"]
     assert bot_msg["confidence"] == 0.8  # best distance 0.30
     assert isinstance(bot_msg["latency_ms"], int) and bot_msg["latency_ms"] >= 0
-    assert (bot_msg["intent"], bot_msg["escalated"], bot_msg["blocked"]) == ("answered", False, False)
+    assert (bot_msg["intent"], bot_msg["escalated"], bot_msg["blocked"]) == ("vpn_issue", False, False)
+    assert bot_msg["outcome"] == "answered" and user_msg["outcome"] is None
 
 
 def test_a_follow_up_continues_the_same_conversation(chat):
@@ -101,7 +102,7 @@ def test_an_escalated_answer_is_flagged_and_marks_the_conversation(chat):
     chat["result"] = dict(NOT_FOUND)
     body = say(chat, "Something nobody documented").json()
     bot_msg = chat["db"].messages[1]
-    assert (bot_msg["intent"], bot_msg["escalated"], bot_msg["confidence"]) == ("escalated", True, 0.0)
+    assert (bot_msg["intent"], bot_msg["outcome"], bot_msg["escalated"], bot_msg["confidence"]) == ("how_to", "escalated", True, 0.0)
     assert chat["db"].conversations[body["conversation_id"]]["status"] == "escalated"
 
 
@@ -119,11 +120,11 @@ def test_a_blocked_message_is_saved_as_a_placeholder_with_a_flag(chat):
 
 def test_a_proposed_action_is_saved_without_its_secret_id(chat):
     proposal = {"id": "secret-id-0123456789abcdef", "name": "request_password_reset", "arguments": {}, "label": "x"}
-    chat["monkeypatch"].setattr(main, "propose_action", lambda q: {"name": "request_password_reset", "arguments": {}})
+    chat["monkeypatch"].setattr(main, "propose_action", lambda q, intent: {"name": "request_password_reset", "arguments": {}})
     chat["monkeypatch"].setattr(main.proposals, "propose", lambda email, name, args: proposal)
     body = say(chat, "reset my password please").json()
     assert body["proposed_action"]["id"] == proposal["id"]
-    assert chat["db"].messages[1]["intent"] == "action_proposed"
+    assert (chat["db"].messages[1]["intent"], chat["db"].messages[1]["outcome"]) == ("password_reset", "action_proposed")
     assert proposal["id"] not in chat["db"].dump()
     assert chat["attached"] == [(proposal["id"], 1)]  # linked, so a ticket from it joins this chat
 

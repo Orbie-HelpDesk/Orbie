@@ -13,7 +13,7 @@ def stub_backends(monkeypatch, login_as):
     monkeypatch.setattr(
         main,
         "answer",
-        lambda q: {"answer": "ok", "citations": [], "escalate": False, "distances": []},
+        lambda q, **kw: {"answer": "ok", "citations": [], "escalate": False, "distances": []},
     )
     monkeypatch.setattr(
         main,

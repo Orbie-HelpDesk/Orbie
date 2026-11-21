@@ -29,7 +29,7 @@ class Stubs:
         far = any(word in question.lower() for word in self.far)
         return [chunk("vpn-troubleshooting.md", 0.8 if far else 0.3)]
 
-    def answer(self, question, chunks=None):
+    def answer(self, question, chunks=None, **kw):
         self.answers.append(question)
         if chunks[0]["distance"] > e.MAX_DISTANCE:
             return {"answer": "not found", "citations": [], "escalate": True, "distances": []}
@@ -286,3 +286,68 @@ def test_the_timeout_option_is_the_limit_for_search_and_answer_calls_only_during
     e.main(["--set", "hard", "--limit", "2", "--pause", "0", "--timeout", "77", "--report", str(tmp_path / "r.md")])
     assert seen[0] == (77, 77, 77)
     assert (settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds) == before
+
+
+# ---------- intent routing and the output check in the runner ----------
+def test_the_runner_classifies_each_question_with_the_rules_and_no_model_call(stubs):
+    rec = e.run_rag_case(case("my vpn is down"), judge_on=False, pacer=pacer())
+    assert (rec["intent"], rec["intent_source"]) == ("vpn_issue", "rules") and rec["intent_confidence"] >= 0.75
+    assert rec["expected_intent"] is None  # the generated set has no labels
+
+
+def test_a_label_in_the_case_is_carried_into_the_record(stubs):
+    labelled = {**case("I forgot my password"), "expected_intent": ["password_reset", "how_to"]}
+    rec = e.run_rag_case(labelled, judge_on=False, pacer=pacer())
+    assert rec["expected_intent"] == ["password_reset", "how_to"] and rec["intent"] == "password_reset"
+
+
+def test_intent_model_flag_lets_the_classifier_model_decide(stubs, monkeypatch):
+    seen = []
+    real = e.classify
+    monkeypatch.setattr(e, "classify", lambda q, use_model=None: seen.append(use_model) or real(q, use_model=False))
+    e.run_rag_case(case(), judge_on=False, pacer=pacer())
+    e.run_rag_case(case(), judge_on=False, pacer=pacer(), intent_model=True)
+    assert seen == [False, True]
+
+
+def test_a_blocked_answer_is_recorded_with_what_the_model_said_and_was_given(stubs, monkeypatch):
+    def blocked(question, chunks=None, **kw):
+        return {"answer": "not found", "citations": [], "escalate": True, "distances": [],
+                "output_check": {"action": "not_found", "reasons": ["ungrounded"]}, "raw_answer": "1. Do something else."}
+
+    monkeypatch.setattr(e, "answer", blocked)
+    rec = e.run_rag_case(case(), judge_on=False, pacer=pacer())
+    assert rec["output_action"] == "not_found" and rec["output_reasons"] == ["ungrounded"]
+    assert rec["raw_answer"] == "1. Do something else." and rec["retrieved_sources"] == ["vpn-troubleshooting.md"]
+
+
+def test_a_passing_answer_keeps_only_the_action(stubs, monkeypatch):
+    def fine(question, chunks=None, **kw):
+        return {"answer": "1. Restart.", "citations": ["vpn-troubleshooting.md"], "escalate": False, "distances": [],
+                "output_check": {"action": "pass", "reasons": []}}
+
+    monkeypatch.setattr(e, "answer", fine)
+    rec = e.run_rag_case(case(), judge_on=False, pacer=pacer())
+    assert rec["output_action"] == "pass" and "raw_answer" not in rec and "retrieved_sources" not in rec
+
+
+def test_the_report_has_an_intent_section_for_the_labelled_hard_set_and_none_for_the_generated_set(stubs, tmp_path):
+    hard = tmp_path / "hard.md"
+    e.main(["--set", "hard", "--pause", "0", "--report", str(hard)])
+    text = hard.read_text(encoding="utf-8")
+    assert "## Intent routing" in text and "Intent accuracy:" in text and "Decided by the rules:" in text
+    generated = tmp_path / "generated.md"
+    e.main(["--set", "generated", "--limit", "3", "--pause", "0", "--report", str(generated)])
+    assert "## Intent routing" not in generated.read_text(encoding="utf-8")
+
+
+def test_the_report_lists_possible_wrong_blocks(stubs, tmp_path, monkeypatch):
+    def blocked(question, chunks=None, **kw):
+        return {"answer": "not found", "citations": [], "escalate": True, "distances": [],
+                "output_check": {"action": "not_found", "reasons": ["ungrounded"]}, "raw_answer": "x"}
+
+    monkeypatch.setattr(e, "answer", blocked)
+    report = tmp_path / "r.md"
+    e.main(["--set", "hard", "--limit", "4", "--pause", "0", "--no-judge", "--report", str(report)])
+    text = report.read_text(encoding="utf-8")
+    assert "## Output guardrail" in text and "may have been wrongly blocked" in text

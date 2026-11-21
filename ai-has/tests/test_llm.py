@@ -229,7 +229,7 @@ def route(monkeypatch, login_as, clock):
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
     limiter.reset()
     login_as("employee")
-    monkeypatch.setattr(main, "propose_action", lambda q: None)
+    monkeypatch.setattr(main, "propose_action", lambda q, intent: None)
     yield TestClient(main.app, raise_server_exceptions=False)
     limiter.reset()
 

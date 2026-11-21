@@ -64,7 +64,7 @@ def test_headers_on_static_style_responses(tmp_path, monkeypatch):
 
 def test_headers_on_rate_limited_response(monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_chat_per_min", 1)
-    monkeypatch.setattr(main, "answer", lambda q: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
+    monkeypatch.setattr(main, "answer", lambda q, **kw: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
     c = client()
     c.post("/chat", json={"message": "printer"})
     res = c.post("/chat", json={"message": "printer"})
@@ -73,7 +73,7 @@ def test_headers_on_rate_limited_response(monkeypatch):
 
 
 def test_unhandled_error_becomes_generic_500_without_leaking(monkeypatch, caplog):
-    def boom(question):
+    def boom(question, **kw):
         raise RuntimeError(f"could not connect to {SECRET_URL} using key {SECRET_KEY}")
 
     monkeypatch.setattr(main, "answer", boom)

@@ -42,8 +42,8 @@ def seen(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "update_status", fake_status)
     monkeypatch.setattr(main, "create_ticket", fake_ticket)
-    monkeypatch.setattr(main, "answer", lambda q: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
-    monkeypatch.setattr(main, "propose_action", lambda q: None)
+    monkeypatch.setattr(main, "answer", lambda q, **kw: {"answer": "ok", "citations": [], "escalate": False, "distances": []})
+    monkeypatch.setattr(main, "propose_action", lambda q, intent: None)
     monkeypatch.setattr(main.proposals, "propose", fake_propose)
     monkeypatch.setattr(
         main.proposals, "decide", lambda aid, email, confirm: calls["confirm"].append(email) or {"status": "done"}
@@ -121,7 +121,7 @@ def test_the_logged_in_user_owns_the_ticket(seen):
 
 
 def test_confirm_and_chat_use_the_logged_in_user(seen, monkeypatch):
-    monkeypatch.setattr(main, "propose_action", lambda q: {"name": "request_password_reset", "arguments": {}})
+    monkeypatch.setattr(main, "propose_action", lambda q, intent: {"name": "request_password_reset", "arguments": {}})
     client_as("employee").post("/chat", json={"message": "reset my password please"})
     client_as("admin").post("/actions/confirm", json={"action_id": "a" * 20, "confirm": False})
     assert seen["chat"] == ["employee@example.com"]

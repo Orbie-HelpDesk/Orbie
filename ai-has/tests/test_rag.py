@@ -64,6 +64,7 @@ def test_context_sent_to_the_model_is_unchanged(monkeypatch):
         "citations": ["vpn.md", "wifi.md"],
         "escalate": False,
         "distances": [0.2, 0.23, 0.4],
+        "output_check": {"action": "pass", "reasons": []},
     }
 
 

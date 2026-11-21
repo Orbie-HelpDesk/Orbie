@@ -71,7 +71,7 @@ class FakeChatConn:
             db._next_message += 1
             db.messages.append({
                 "id": mid, "conversation_id": params["c"], "role": params["r"], "content": params["t"],
-                "intent": params["i"], "citations": json.loads(params["ci"]) if params["ci"] else None,
+                "intent": params["i"], "outcome": params["o"], "citations": json.loads(params["ci"]) if params["ci"] else None,
                 "confidence": params["cf"], "latency_ms": params["l"], "escalated": params["e"],
                 "blocked": params["b"], "feedback": None,
                 "created_at": BASE + timedelta(seconds=mid),
@@ -80,6 +80,16 @@ class FakeChatConn:
         if "update conversations set status = 'escalated'" in sql:
             db.conversations[params["c"]]["status"] = "escalated"
             return Result(rowcount=1)
+        if "and not blocked and content <> :p" in sql:
+            mine = [
+                m for m in db.messages
+                if m["conversation_id"] == params["c"] and not m["blocked"] and m["content"] != params["p"]
+            ]
+            rows = [
+                {"role": m["role"], "content": m["content"], "outcome": m.get("outcome") or m["intent"]}
+                for m in mine[-params["n"]:]
+            ]
+            return Result(rows=rows)
         if "update messages set feedback" in sql:
             msg = next((m for m in db.messages if m["id"] == params["m"]), None)
             owner = db.conversations.get(msg["conversation_id"], {}).get("user_id") if msg else None

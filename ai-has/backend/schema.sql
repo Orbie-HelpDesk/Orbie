@@ -99,6 +99,11 @@ alter table messages add column if not exists escalated boolean not null default
 alter table messages add column if not exists blocked boolean not null default false;  -- content is a placeholder, not the raw text
 alter table pending_actions add column if not exists conversation_id integer references conversations (id) on delete set null;
 
+-- Added for intent routing. messages.intent now holds the taxonomy intent (password_reset, how_to, ...).
+-- What happened to the message (answered, escalated, ...) moves to outcome. Old rows keep their
+-- value in intent and have a null outcome, so queries read coalesce(outcome, intent).
+alter table messages add column if not exists outcome varchar(20);
+
 create index if not exists messages_conversation_idx on messages (conversation_id);
 create index if not exists messages_created_idx on messages (created_at);
 create index if not exists conversations_user_idx on conversations (user_id, created_at);

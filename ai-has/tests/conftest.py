@@ -35,3 +35,11 @@ def no_chat_saving_by_default(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "persist_chats", False)
+
+
+@pytest.fixture(autouse=True)
+def no_intent_model_by_default(monkeypatch):
+    """The rules classify without Gemini. A test that wants the model call turns it on with a fake client."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "intent_use_model", False)

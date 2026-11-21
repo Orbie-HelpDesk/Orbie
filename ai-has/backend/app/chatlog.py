@@ -21,10 +21,18 @@ TITLE_LENGTH = 60
 CONFIDENCE_FAR = 0.5
 CONFIDENCE_RANGE = 0.25
 
-INTENT_ANSWERED = "answered"
-INTENT_ESCALATED = "escalated"
-INTENT_ACTION = "action_proposed"
-INTENT_BLOCKED = "blocked"
+# What happened to a message (messages.outcome). Old rows hold these values in messages.intent.
+OUTCOME_ANSWERED = "answered"
+OUTCOME_ESCALATED = "escalated"
+OUTCOME_ACTION = "action_proposed"
+OUTCOME_BLOCKED = "blocked"
+OUTCOME_REFUSED = "refused"
+OUTCOME_CLARIFY = "clarify"
+
+INTENT_ANSWERED = OUTCOME_ANSWERED  # the older names, still used by the route
+INTENT_ESCALATED = OUTCOME_ESCALATED
+INTENT_ACTION = OUTCOME_ACTION
+INTENT_BLOCKED = OUTCOME_BLOCKED
 
 
 def confidence_from_distances(distances: list[float] | None) -> float | None:
@@ -64,6 +72,7 @@ def save_exchange(
     answer: str,
     *,
     intent: str,
+    outcome: str | None = None,
     citations: list[str] | None = None,
     confidence: float | None = None,
     latency_ms: int | None = None,
@@ -88,18 +97,18 @@ def save_exchange(
             ).scalar()
 
         insert = text(
-            "insert into messages (conversation_id, role, content, intent, citations, "
+            "insert into messages (conversation_id, role, content, intent, outcome, citations, "
             "confidence, latency_ms, escalated, blocked) "
-            "values (:c, :r, :t, :i, cast(:ci as json), :cf, :l, :e, :b) returning id"
+            "values (:c, :r, :t, :i, :o, cast(:ci as json), :cf, :l, :e, :b) returning id"
         )
         conn.execute(
             insert,
-            {"c": conversation_id, "r": "user", "t": shown_text, "i": None, "ci": None,
+            {"c": conversation_id, "r": "user", "t": shown_text, "i": None, "o": None, "ci": None,
              "cf": None, "l": None, "e": False, "b": blocked},
         )
         message_id = conn.execute(
             insert,
-            {"c": conversation_id, "r": "assistant", "t": answer, "i": intent,
+            {"c": conversation_id, "r": "assistant", "t": answer, "i": intent, "o": outcome,
              "ci": json.dumps(citations or []), "cf": confidence, "l": latency_ms,
              "e": escalated, "b": blocked},
         ).scalar()
@@ -109,6 +118,32 @@ def save_exchange(
                 text("update conversations set status = 'escalated' where id = :c"), {"c": conversation_id}
             )
     return {"conversation_id": conversation_id, "message_id": message_id}
+
+
+def recent_turns(conversation_id: int | None, exchanges: int) -> list[dict]:
+    """The last `exchanges` question and answer pairs of a conversation, oldest first. Never raises.
+
+    Each item has role, content (already redacted) and outcome. Blocked messages are left out, so
+    their placeholder never reaches the model. The caller must already know the conversation is the
+    caller's own.
+    """
+    if not conversation_id or exchanges <= 0:
+        return []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "select role, content, coalesce(outcome, intent) as outcome from ("
+                    "select id, role, content, outcome, intent from messages "
+                    "where conversation_id = :c and not blocked and content <> :p "
+                    "order by id desc limit :n) recent order by id"
+                ),
+                {"c": conversation_id, "p": PURGED_TEXT, "n": exchanges * 2},
+            ).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.exception("Could not read the history of conversation %s", conversation_id)
+        return []
 
 
 def mark_escalated(conversation_id: int) -> None:
@@ -173,7 +208,7 @@ def get_conversation(conversation_id: int) -> dict | None:
             return None
         rows = conn.execute(
             text(
-                "select id, role, content, intent, citations, confidence, latency_ms, feedback, "
+                "select id, role, content, intent, outcome, citations, confidence, latency_ms, feedback, "
                 "escalated, blocked, created_at from messages where conversation_id = :c order by id"
             ),
             {"c": conversation_id},

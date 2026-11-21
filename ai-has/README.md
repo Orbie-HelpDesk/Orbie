@@ -100,7 +100,7 @@ Every `POST /chat` is saved, so the history survives a new browser and the dashb
 |---|---|---|
 | Conversation | `conversations` | The owner, a status (`open` or `escalated`) and a title made from the first question, already redacted |
 | Your question | `messages` (role `user`) | The PII-redacted text that the pipeline used, never the raw message |
-| Orbie's answer | `messages` (role `assistant`) | The text, the cited articles, a confidence (0 to 1, from the best match distance, same scale as the gauge in the chat), the whole request time in ms, an intent (`answered`, `escalated`, `action_proposed` or `blocked:<reason>`) and the `escalated` flag |
+| Orbie's answer | `messages` (role `assistant`) | The text, the cited articles, a confidence (0 to 1, from the best match distance, same scale as the gauge in the chat), the whole request time in ms, the taxonomy intent (`how_to`, `vpn_issue`, `password_reset`, `software_access`, `incident`, `out_of_scope`, `unknown`, or `blocked:<reason>`), an outcome (`answered`, `escalated`, `action_proposed`, `refused`, `clarify` or `blocked`) and the `escalated` flag |
 | Thumbs up or down | `messages.feedback` | -1, 0 or 1, set only by the owner of the conversation |
 | A blocked message | `messages` | Saved as the placeholder `[blocked message]` with `blocked = true`. The raw text is never stored |
 | Tickets | `tickets.conversation_id` | A ticket made from the chat is linked to its conversation |
@@ -145,9 +145,46 @@ The question is not saved in that case. The chat page shows that message with a 
 
 **What is logged.** One line per failed attempt: the model name, a kind (`timeout`, `rate_limit`, `quota`, `server`, `not_found`, `bad_request`, `auth`, `connection`), the status code, the error class name and the attempt number. The error text, the response body, the URL and any key are never logged, and the original error is not attached to the one that is raised, so a traceback cannot print them either.
 
-**Action detection** (`rag.propose_action`) is an extra chat call, so it is limited: it is skipped when the message starts with how, what or why (an informational question), and otherwise it makes a single attempt with the main model, with no retries and no fallback model. If that attempt fails, the rule-based trigger decides, as before.
+**The extra calls are single attempts.** The intent classifier and the action tool call (see "How a message is routed") make one attempt on the main model, with no retries and no fallback model. If one fails, the rules decide (the intent) or the proposal is built by rule (the action), so a slow provider cannot hold up the chat twice.
 
 **Evaluation runner.** `eval_run` does not retry a search or answer that already retried inside `llm.py`. After `--max-provider-failures` questions in a row fail because the provider answered 429, 503 or timed out (default 3, `0` never stops), it stops with a message that says how many results are saved and which command to run next, and it writes no report. The saved results stay in `eval_data/.cache`, so the same command with `--resume` carries on. `--timeout` is also the timeout and total time of the search and answer calls during the run.
+
+## How a message is routed
+After the input guardrails and PII redaction, every message goes through the same steps (`POST /chat`):
+
+1. **Memory.** The last 4 exchanges of the saved conversation (up to 8 messages, each cut to 500 characters, already redacted, blocked ones left out) are read from the server. The browser sends no history, so none can be forged. A message that is short (4 words or fewer) or points back ("it", "still", "again", "yan", "pa rin") and names no IT topic gets a **standalone question** by rules: the earlier question plus the follow-up, at most 240 characters. There is no Gemini call for this. Without a saved conversation (saving off, a new chat) there is no memory. `HISTORY_TURNS=0` turns it off.
+2. **Intent** (`intent.py`, the taxonomy in `docs/prompt-taxonomy.md`). Rules in English and Taglish decide first. Only when they are not confident (below `INTENT_CONFIDENCE_THRESHOLD`, default 0.75, or two different intents fit) is one small model call made: strict JSON, `temperature 0`, a few tokens, a single attempt with no retries and no fallback model. If it fails or its reply is not valid, the rules' guess is used, and a provider problem never becomes an action, a refusal or a question: it falls back to the knowledge base. `INTENT_USE_MODEL=false` uses the rules only.
+3. **Route.**
+
+| Intent | What happens |
+|---|---|
+| `how_to`, `vpn_issue` | Hybrid search with the standalone question, then the answer from the knowledge base, with the memory in the prompt |
+| `password_reset`, `software_access`, `incident` | An action is offered through the tool-calling path (below), with the Confirm and Cancel card. `incident` is always a high priority ticket |
+| `out_of_scope` | A polite refusal. No search and no model call |
+| `unknown` | One clarifying question. If the next message is still unclear, it escalates (`escalate=true`, the ticket button). This needs a saved conversation to remember that it already asked |
+
+A question that starts with how, what, why or paano is asked for information, so "How do I reset my password?" goes to the knowledge base and "I forgot my password" offers the reset. The response carries `intent: {name, confidence, source}` (`rules`, `model` or `fallback`), and `messages.intent` stores the name. What happened to the message (answered, escalated, action_proposed, refused, clarify, blocked) is in `messages.outcome`, and the analytics read `coalesce(outcome, intent)` so rows saved before `outcome` existed still count.
+
+**Function calling.** For an action intent, `rag.propose_action` asks the model, through the OpenAI-compatible `tools` parameter, to fill in the action's arguments (a short ticket summary and a priority). Only the tool for that intent is offered, and it is a single attempt through `llm.py`. If the call fails or the tool call is malformed (bad JSON, the wrong tool, no summary), the proposal is built by rule from the message instead. If the model answers without calling the tool, it has decided not to propose anything and the knowledge base answers. The model can only propose. Nothing runs until the user confirms, and `proposals.py` validates, redacts and stores the proposal as before.
+
+**Output guardrails** (`guardrails.check_output`, run on the model's answer before it is returned):
+- **Replaced** (a fixed message, `escalate=false`) if the answer contains an email or phone number, a card number, an API key, a password, or a run of 8 words copied from one of our own prompts. An email or phone number is allowed when it is written exactly like that in the retrieved article, because the knowledge base is company text. A password, a key or a card number never is.
+- **Not found** (`escalate=true`) if the answer cites no source, is empty, or none of its steps are supported by the retrieved text. A step counts as supported when about a third of its longer words (compared by stem) appear in the context, and one supported step is enough. Steps with fewer than two such words are not judged. The citations are the articles the server gave the model, not something the model writes, so "no source" is only a safety net and the step check does the real work.
+- The `guardrails` field of the response says what happened: `{"blocked": false, "reason": null, "redacted": [], "output": {"action": "pass" | "replaced" | "not_found", "reasons": [...]}}`, with `output` null on paths that have no model answer. The log has the reason names only, never the answer text.
+**Measured leniency.** On the hard question set with a real model, 14 of the 37 retrieval questions could be answered before the provider's daily quota ran out (the rest got a 429, and `eval_run` stopped with its clear message). All 14 answers passed the output check, so **0 good answers were wrongly blocked**, and in every one at least one step was fully supported by the retrieved article (1.00, against a threshold of 0.35). This is a small sample. Run `eval_run --set hard --no-judge` again when the quota is back to cover all 37: the report's "Output guardrail" section lists any answer that may have been wrongly blocked.
+
+### Gemini calls per chat message
+| Case | Before | Now |
+|---|---|---|
+| The common case: a normal question the rules are sure about (this includes the rewrite, the memory and the output checks) | 2 (embedding, answer) | **2, so +0** |
+| An action intent, rules sure | 1 (the tool call) | **1** (the tool call, as before) |
+| Out of scope | 2 | **0** |
+| `unknown` (a greeting, or the model is not sure) | 2 | 1 (the classifier) or 0 when the rules recognise a greeting |
+| The rules are not sure, and the question goes to the knowledge base | 2 | **3**: one classifier call, then the embedding and the answer |
+| The rules are not sure, and it is an action | 1 | **2**: the classifier, then the tool call |
+| Worst case | 3 | **3** (classifier, embedding, answer), and 2 for an action. Retries and the fallback model in `llm.py` can add attempts to the embedding and the answer, but never to the classifier or the tool call, which are single attempts |
+
+The rule that decides how often the classifier is needed is measured by `eval_run` ("Decided by the rules").
 
 ## Quick start (Supabase)
 ```bash
@@ -218,6 +255,7 @@ Run it as one file, because the statements depend on each other in order (`pendi
 | Chat persistence (this PR) | Title of a conversation | `alter table conversations add column if not exists title varchar(120);` |
 | This PR | Thumbs up or down | `alter table messages add column if not exists feedback smallint check (feedback in (-1, 0, 1));` |
 | This PR | Escalated flag | `alter table messages add column if not exists escalated boolean not null default false;` |
+| Intent routing (this PR) | What happened to a message. `messages.intent` now holds the taxonomy intent, and analytics read `coalesce(outcome, intent)` | `alter table messages add column if not exists outcome varchar(20);` |
 | This PR | Blocked flag | `alter table messages add column if not exists blocked boolean not null default false;` |
 | This PR | Link from a proposed action to its conversation | `alter table pending_actions add column if not exists conversation_id integer references conversations (id) on delete set null;` |
 | This PR | Indexes for the history list and the analytics | `create index if not exists messages_conversation_idx on messages (conversation_id);` `create index if not exists messages_created_idx on messages (created_at);` `create index if not exists conversations_user_idx on conversations (user_id, created_at);` |
@@ -256,7 +294,7 @@ docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set
 docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set hard --limit 10
 docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set all
 ```
-Options: `--set generated|hard|all` (default `generated`), `--limit N` (evenly spaced sample of retrieval questions; guardrail checks cost nothing and always run), `--no-judge` (skip the two judge calls per answer), `--pause` (seconds between calls, default 1), `--timeout` (seconds per call, default 90, also the limit for search and answer calls in the run), `--max-provider-failures N` (stop after N questions in a row fail because the AI service is busy or down, default 3, 0 never stops), `--resume`, `--dry-run`, `--report PATH`.
+Options: `--set generated|hard|all` (default `generated`), `--limit N` (evenly spaced sample of retrieval questions; guardrail checks cost nothing and always run), `--no-judge` (skip the two judge calls per answer), `--pause` (seconds between calls, default 1), `--timeout` (seconds per call, default 90, also the limit for search and answer calls in the run), `--intent-model` (let the classifier model decide the questions the rules are not sure about, one extra call each; the default uses the rules only), `--max-provider-failures N` (stop after N questions in a row fail because the AI service is busy or down, default 3, 0 never stops), `--resume`, `--dry-run`, `--report PATH`.
 
 Each call is retried with exponential backoff, and every result is saved to `eval_data/.cache` (git-ignored) as soon as it is known. If a run stops, `--resume` reuses the saved results and only repeats questions that failed. Calls per question: 1 embedding, 1 chat (only if the best match is close enough) and 2 judge calls (only for answered questions). The report is written to `eval_data/report.md` with the date and a "How to read this" section.
 
@@ -316,14 +354,14 @@ Workflow data lives in the `n8ndata` volume. Re-export a changed workflow from t
 ## Actions from chat
 Flow: the user asks for something, Orbie proposes, the user confirms, the backend runs it through n8n.
 
-1. `POST /chat` runs the usual guardrails and PII redaction. If the cleaned message looks like a request for an action (words such as ticket, reset my password, locked out), `rag.propose_action` sends it to the model with two tools, `create_ticket` and `request_password_reset`, using the `tools` parameter of the OpenAI-compatible Gemini endpoint. **This is one extra Gemini chat call for those messages only.** Other messages cost nothing extra. If the model calls a tool, `/chat` skips the knowledge base answer and returns `proposed_action`. If it does not (for example "how do I reset my password?"), the normal answer is returned, so that message used two chat calls in total.
+1. `POST /chat` runs the usual guardrails and PII redaction, then the intent router (see "How a message is routed"). For `password_reset`, `software_access` and `incident`, `rag.propose_action` sends the message to the model with the one tool for that intent (`request_password_reset` or `create_ticket`), using the `tools` parameter of the OpenAI-compatible Gemini endpoint. **This is one Gemini chat call, the same as before.** If the model calls the tool, `/chat` skips the knowledge base answer and returns `proposed_action`. If it does not, the normal answer is returned.
 2. The proposal is validated (known tool, summary length, priority, PII redacted, injection check) and stored in `pending_actions` with an id from `secrets.token_urlsafe`, its owner and a 10 minute expiry. The model never chooses the account: a password reset always applies to the owner.
 3. The chat page shows a card with Confirm and Cancel. `POST /actions/confirm` receives only the id. What runs is what was stored, so a request cannot change it.
 4. Deciding is one atomic `UPDATE ... WHERE id AND owner AND status = 'pending' AND not expired`, and the row count says if this call won. A double click, a replay or two tabs cannot run an action twice, and another user is rejected with 403.
 5. Confirming a ticket creates it in our database first, then asks n8n for the Jira key and saves it in `tickets.external_ref`. If n8n is down the ticket still exists and the card says the Jira sync is pending. A password reset needs n8n, so it fails with a clear message if n8n is down. The proposal is used up either way, so the user asks again.
 6. Confirm and cancel each write an `audit_logs` row: `actor` is `user:<id>` (never an email), `action` is `create_ticket` or `reset_password`, and `payload` has the decision, the outcome, the ticket id and priority. It holds no email, name or ticket text.
 
-**If tool calling is unreliable.** If the tool call raises an error or comes back malformed (bad JSON, unknown tool), `propose_action` falls back to a small rule: a message that clearly asks to create or open a ticket, or to reset or unlock a password, and is not a "how, what, why..." question. The same confirm step still applies. This was checked end to end with a rejected model key, where the rule path produced the proposals. It has not been checked against a live Gemini tool call, so try it with a real key (see below).
+**If tool calling is unreliable.** If the tool call raises an error or comes back malformed (bad JSON, the wrong tool, no summary), the proposal is built by rule from the intent: a reset for `password_reset`, a medium priority ticket for `software_access` and a high priority ticket for `incident`, with the message as the summary. The same confirm step still applies. This was checked end to end with a rejected model key, where the rule path produced the proposals. It has not been checked against a live Gemini tool call, so try it with a real key (see below).
 
 **Owner.** A proposal belongs to the logged-in user, and only that user can confirm or cancel it.
 
@@ -347,7 +385,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: the intent rules (English and Taglish, ambiguity, question forms), the classifier call with a fake model (valid, fenced, invalid, low confidence, failing, single attempt), each route of `/chat`, the follow-up rewrite and the memory, the output checks, the tool-calling path with fake replies, the evaluation's intent and output sections, the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -357,7 +395,7 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `intent.py` (intent rules and classifier), `memory.py` (history and the follow-up rewrite), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
 - `frontend/chat/`, `frontend/admin/` and `frontend/login/`: the three pages (`chat/session.js` is shared by chat and admin)
 - `kb/`: IT knowledge base SOPs (markdown)
@@ -366,7 +404,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker buil
 - `n8n/`: exported workflows (mock Jira ticket, mock password reset)
 
 ## Not built yet
-- Intent classification beyond the keyword check that decides when to offer tools
+- Intent rules for more languages than English and Taglish, and a model-written rewrite for follow-ups the rules cannot make standalone
 - Real Jira and Active Directory (the workflows are mocks)
 - Copying the old browser-only history to the server, a list of everyone's conversations for staff, and automatic retention (`purge_old` is run by hand)
 - Password reset by email, token revocation and two-factor login (see Login and roles)

@@ -2,7 +2,8 @@
 
 Definitions
 - question: a user message that was not blocked.
-- answered / escalated / actions proposed / blocked: the outcome saved on the assistant message.
+- answered / escalated / actions proposed / blocked: the outcome saved on the assistant message
+  (messages.outcome, or messages.intent on rows saved before outcome existed).
 - deflection rate: answered / (answered + escalated). Blocked messages and proposed actions are
   left out, because they are neither a solved question nor a failed search.
 - thumbs up share: up / (up + down), over the messages that were rated.
@@ -34,9 +35,9 @@ DAILY_SQL = text(
 TOTALS_SQL = text(
     f"""
     select (now() at time zone :tz)::date as today,
-           count(*) filter (where intent = 'answered') as answered,
-           count(*) filter (where intent = 'escalated') as escalated,
-           count(*) filter (where intent = 'action_proposed') as actions,
+           count(*) filter (where coalesce(outcome, intent) = 'answered') as answered,
+           count(*) filter (where coalesce(outcome, intent) = 'escalated') as escalated,
+           count(*) filter (where coalesce(outcome, intent) = 'action_proposed') as actions,
            count(*) filter (where blocked) as blocked,
            percentile_cont(0.5) within group (order by latency_ms)
                filter (where latency_ms is not null and not blocked) as median_ms,

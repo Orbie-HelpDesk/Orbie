@@ -1,4 +1,7 @@
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 MAX_LENGTH = 1000
 
@@ -104,6 +107,137 @@ def check_input(text: str) -> dict:
         if pattern.search(text):
             return {"blocked": True, "reason": name, "message": BLOCKED_MESSAGE}
     return {"blocked": False, "reason": None, "message": None}
+
+
+# ---------- Output guardrails: check the answer before it is shown ----------
+REPLACED_MESSAGE = (
+    "I can't show that answer. Please contact the IT helpdesk directly, or tell me a bit more about what you need."
+)
+
+# Findings that are never allowed in an answer, even if the knowledge base text has them
+NEVER_ALLOWED = {"password", "api_key", "card"}
+SHINGLE_WORDS = 8  # an answer that repeats 8 words in a row of a protected prompt is a leak
+MIN_STEP_WORDS = 2  # a step with fewer content words says too little to judge
+SUPPORT_RATIO = 0.35  # a step is supported when this share of its content words is in the context
+
+STOPWORDS = frozenset(
+    "about above after again also another because before being below between both cannot could does doing down "
+    "during each either else ever every from further have having here however into just more most much must "
+    "never once only other should some such than that their them then there these they this those through "
+    "under until very want were what when where whether which while will with would your yours yourself "
+    "please step steps make sure also then next".split()
+)
+WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _pii_findings(text: str) -> list[tuple[str, str]]:
+    """(label, matched text) for every PII pattern in the text. redact_pii hides them, this lists them."""
+    found = [("email", m.group()) for m in EMAIL_RE.finditer(text)]
+    found += [("api_key", m.group()) for m in API_KEY_RE.finditer(text)]
+    found += [("password", m.group(3)) for m in PASSWORD_RE.finditer(text)]
+    for m in CARD_RE.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+            found.append(("card", m.group()))
+    found += [("phone", m.group()) for m in PH_MOBILE_RE.finditer(text)]
+    found += [("phone", m.group()) for m in PHONE_RE.finditer(text)]
+    return found
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _words(text: str) -> list[str]:
+    return WORD_RE.findall(text.lower())
+
+
+def _shingles(text: str) -> set[tuple[str, ...]]:
+    words = _words(text)
+    return {tuple(words[i : i + SHINGLE_WORDS]) for i in range(max(0, len(words) - SHINGLE_WORDS + 1))}
+
+
+def looks_like_prompt(answer: str, protected: tuple[str, ...]) -> bool:
+    """True if the answer repeats a run of words from one of our own prompts."""
+    answer_shingles = _shingles(answer)
+    return any(answer_shingles & _shingles(prompt) for prompt in protected)
+
+
+def _stem(word: str) -> str:
+    word = word.strip("'")
+    for ending in ("ing", "ed", "es", "s"):
+        if len(word) > len(ending) + 3 and word.endswith(ending):
+            return word[: -len(ending)]
+    return word
+
+
+def _content_words(text: str) -> list[str]:
+    return [_stem(w) for w in _words(text) if len(w) > 3 and w not in STOPWORDS and not w.isdigit()]
+
+
+def _steps(answer: str) -> list[str]:
+    """The lines of an answer, without list numbers or bullets. Long lines are split into sentences."""
+    steps = []
+    for line in answer.splitlines():
+        line = re.sub(r"^\s*(?:\d+[.)]|[-*•])\s*", "", line).strip()
+        steps += [s for s in re.split(r"(?<=[.!?])\s+", line) if s]
+    return steps
+
+
+def supported_by(answer: str, context: str) -> bool | None:
+    """Does at least one step of the answer appear in the context? None if there is nothing to judge.
+
+    Lenient on purpose: a step counts as supported when about a third of its content words (the
+    stems of the longer, non-trivial words) are in the context, and one supported step is enough.
+    """
+    context_words = set(_content_words(context))
+    judged = supported = 0
+    for step in _steps(answer):
+        words = _content_words(step)
+        if len(words) < MIN_STEP_WORDS:
+            continue
+        judged += 1
+        if sum(1 for w in words if w in context_words) / len(words) >= SUPPORT_RATIO:
+            supported += 1
+    if judged == 0:
+        return None
+    return supported > 0
+
+
+def check_output(answer: str, context: str, citations: list[str], protected: tuple[str, ...] = ()) -> dict:
+    """Checks the model's answer before it is returned.
+
+    action "replaced": the answer has PII, a password, an API key, or text from our own prompts.
+        A contact detail (email or phone) that is written exactly like that in the retrieved context
+        is allowed, because the knowledge base is company text. A password, key or card never is.
+    action "not_found": the answer cites no source, or none of its steps are supported by the context.
+    action "pass": nothing to report.
+
+    Only the reason names are logged, never the answer text.
+    """
+    reasons: list[str] = []
+    if not answer.strip():
+        logger.warning("output guardrail: action=not_found reasons=empty")
+        return {"action": "not_found", "reasons": ["empty"]}
+    squashed_context = _squash(context)
+    for label, value in _pii_findings(answer):
+        if label not in NEVER_ALLOWED and _squash(value) in squashed_context:
+            continue
+        if f"pii:{label}" not in reasons:
+            reasons.append(f"pii:{label}")
+    if looks_like_prompt(answer, protected):
+        reasons.append("prompt_leak")
+    if reasons:
+        result = {"action": "replaced", "reasons": reasons}
+    else:
+        if not citations:
+            reasons.append("no_source")
+        elif supported_by(answer, context) is False:
+            reasons.append("ungrounded")
+        result = {"action": "not_found" if reasons else "pass", "reasons": reasons}
+    if reasons:
+        logger.warning("output guardrail: action=%s reasons=%s", result["action"], ",".join(reasons))
+    return result
 
 
 # Quick self-test: docker compose exec backend python -m app.guardrails

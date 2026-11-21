@@ -20,7 +20,15 @@ flowchart LR
     NF --> FE
     FE -->|Create a ticket: POST /tickets| TK[Ticket service<br/>PII redacted]
     TK <--> DB
-    G1 -->|looks like an action request| TC[Tool calling<br/>model only proposes]
+    G1 --> IR[Intent router<br/>rules, one small model call if unsure]
+    IR -->|how_to, vpn_issue| RAG
+    IR -->|out_of_scope| NF2[Polite refusal, no model call]
+    IR -->|unknown| CQ[Clarifying question, then escalate]
+    IR -->|password_reset, software_access, incident| TC[Tool calling<br/>model only proposes]
+    MEM[Memory<br/>last 4 turns, standalone question] --> IR
+    MEM --> RAG
+    LLM --> OG[Output guardrails<br/>PII, prompt text, grounding]
+    OG --> FE
     TC --> PA[(pending_actions)]
     TC -->|proposed_action| FE
     FE -->|Confirm or Cancel: POST /actions/confirm| CF[Atomic single use claim<br/>owner check]
@@ -45,7 +53,7 @@ flowchart LR
 | Login page | HTML, CSS, JS in `frontend/login/` | Sign in, same look as the chat. `chat/session.js` shows the user and Log out, and sends a logged-out visitor to the login page |
 | Admin dashboard | HTML, CSS, JS in `frontend/admin/` | Ticket KPIs, list with status filter, status changes. Agent or admin only |
 | Authentication | `auth.py`, `sessions.py`, `passwords.py`, `loginlimit.py`, `set_password.py` | PBKDF2 password hashes (standard library), signed `HttpOnly`, `SameSite=Lax` session cookie, role checks as FastAPI dependencies, failed login limits, a hidden-prompt helper to set passwords |
-| Chat history | `chatlog.py` | Saves each exchange (redacted text, citations, confidence, latency, intent, flags), lists, reads and deletes conversations, stores thumbs. Failures never stop an answer |
+| Chat history | `chatlog.py` | Saves each exchange (redacted text, citations, confidence, latency, intent, outcome, flags), lists, reads and deletes conversations, stores thumbs. Failures never stop an answer |
 | Analytics | `analytics.py`, `GET /stats/analytics` | Questions per day, deflection rate, median and p95 latency, thumbs share, top cited articles, most escalated questions. Staff only |
 | Retention | `purge_old.py` | Replaces old message text and conversation titles with `[purged]`, keeps the numbers. Local database unless `--allow-remote` |
 | Audit | `audit.py` | One place that writes `audit_logs` rows without personal data |
@@ -54,7 +62,10 @@ flowchart LR
 | Tickets | `tickets.py` | Create, list, change status, KPI stats, save the Jira key |
 | Actions | `actions.py` | Calls the n8n webhooks (5 second timeout, optional secret header, clear errors). Creates the local ticket first, so a Jira outage leaves it pending |
 | Proposals | `proposals.py` | Validates and stores what the model proposed, confirms or cancels it atomically for its owner, writes `audit_logs` |
-| Tool calling | `rag.py` (`propose_action`) | Two tools, `create_ticket` and `request_password_reset`. The model can only propose. Rule-based fallback if tool calling fails |
+| Intent routing | `intent.py`, the route in `main.py` | Rules in English and Taglish decide the intent. One small single-attempt model call only when they are unsure. Routes: RAG, an action proposal, a refusal, or a clarifying question that escalates on the second miss |
+| Memory | `memory.py`, `chatlog.recent_turns` | The last 4 exchanges of the saved conversation for the answer prompt, and a rules-built standalone question for the search |
+| Output guardrails | `guardrails.check_output`, called from `rag.answer` | Replaces an answer with PII, a password, a key or prompt text. Sends an unsupported answer to not found |
+| Tool calling | `rag.py` (`propose_action`) | For an action intent, one model call with only that intent's tool fills in the arguments. The model can only propose. Rule-built proposal if the call fails or is malformed |
 | n8n | `n8nio/n8n`, compose profile `n8n`, `n8n/*.json` | Mock Jira key and mock Active Directory reset. Published on 127.0.0.1:5678 only |
 | Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets, `pending_actions`, `audit_logs`, and the saved `conversations` and `messages` |
 | LLM | Gemini via OpenAI-compatible endpoint | Embeddings and answers; model names come from `.env` |
@@ -98,11 +109,17 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 4. If nothing worked, `ProviderUnavailable` is raised with a fixed message and no attached error. An app-level handler turns it into 503, `Retry-After: 10` and the busy message. Nothing is saved for that question.
 5. The log has one line per failed attempt (model, kind, status, error class, attempt number), never the error text, body, URL or key.
 6. The chat page shows the message with a Try again button that waits out the `Retry-After`, then resends the same question without adding a second copy of it.
-7. The optional action-detection call is skipped for how, what and why questions and makes one attempt only, with the rule-based trigger as plan B. The evaluation runner stops after repeated provider failures and resumes with `--resume`.
+7. The intent classifier and the action tool call are single attempts, with the rules as plan B. The evaluation runner stops after repeated provider failures and resumes with `--resume`.
+
+## Request flow: intent routing
+1. The recent turns of the saved conversation are read from the server (redacted text, the caller's own conversation only). A short or pointing follow-up with no IT topic becomes a standalone question by rules.
+2. `intent.classify` runs the rules. If they are confident (0.75 and no second intent that fits), that is the answer, with no model call. Otherwise one small JSON classifier call is made (single attempt), and if it fails the rules' guess for a knowledge base question, or `how_to`, is used.
+3. `how_to` and `vpn_issue` search with the standalone question and answer from the knowledge base, with the earlier turns in the prompt. `out_of_scope` returns a refusal. `unknown` asks one clarifying question and escalates if the next message is still unclear. An action intent goes to the action flow below.
+4. The model's answer passes `check_output` before it is returned: replaced if it holds PII, a password, a key or prompt text, sent to not found if no step is supported by the retrieved text. The response and the saved message carry the intent, and the saved message carries the outcome.
 
 ## Request flow: actions
-1. After the guardrails, if the cleaned message matches a keyword check, one extra model call offers the two tools. A message that does not match costs nothing extra.
-2. If the model calls a tool (or the rule-based fallback matches because the call failed), the arguments are validated and redacted and stored in `pending_actions` with an unguessable id, the owner and a 10 minute expiry. `/chat` returns `proposed_action` and no knowledge base answer. Nothing has run.
+1. For `password_reset`, `software_access` and `incident`, one model call with only that intent's tool fills in the arguments (a single attempt). A ticket for an incident is always high priority.
+2. If the model calls the tool (or the proposal is built by rule because the call failed or was malformed), the arguments are validated and redacted and stored in `pending_actions` with an unguessable id, the owner and a 10 minute expiry. `/chat` returns `proposed_action` and no knowledge base answer. Nothing has run.
 3. The chat page shows Confirm and Cancel. `POST /actions/confirm` sends only the id.
 4. One `UPDATE ... WHERE id AND owner AND status = 'pending' AND not expired` claims the proposal. Row count 1 means this call owns it. Otherwise the answer is 403 (other owner), 404, 409 (already handled) or 410 (expired).
 5. A confirmed ticket is saved locally, then n8n returns a Jira key stored in `tickets.external_ref`. If n8n is down the ticket stays and the Jira sync is reported as pending. A password reset needs n8n and reports a clear error without it.
@@ -126,7 +143,7 @@ Scripts that write data (`init_db`, `ingest`) run only when the `DATABASE_URL` h
 
 ## Not built yet
 - Real Jira and Active Directory (the n8n workflows are mocks)
-- Intent classification beyond the keyword check that decides when to offer tools
+- Intent rules for more languages than English and Taglish, and a model-written rewrite for follow-ups the rules cannot make standalone
 - Copying the old browser-only history to the server, a list of all conversations for staff, and automatic retention
 - Password reset by email, changing your own password in the UI, token revocation (logout only clears the cookie), two-factor login, and different rights for agent and admin
 - Output guardrails on the answer

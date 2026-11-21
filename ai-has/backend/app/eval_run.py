@@ -12,6 +12,8 @@ Options:
     --pause SECONDS            minimum gap between Gemini calls (default 1.0)
     --timeout SECONDS          give up on one Gemini call after this long (default 90). Also the
                                timeout and total time of the search and answer calls in this run
+    --intent-model             let the classifier model decide the questions the rules are not sure
+                               about (default: rules only, no extra Gemini calls)
     --max-provider-failures N  stop after N questions in a row fail because the AI service answered
                                429, 503 or timed out (default 3, 0 never stops)
     --resume                   reuse results saved by an earlier run that stopped early
@@ -37,6 +39,7 @@ from .eval_metrics import extract_section, recommend, sample_evenly, sweep, with
 from .eval_report import build_report
 from .guardrails import check_input, redact_pii
 from .ingest import client
+from .intent import classify
 from .llm import ProviderUnavailable
 from .rag import MAX_DISTANCE, answer, build_context, retrieve, select_chunks
 
@@ -137,13 +140,17 @@ class Pacer:
         self._last = self._clock()
 
 
-def run_rag_case(case: dict, judge_on: bool, pacer: Pacer, tries: int = 4, retry_sleep=time.sleep) -> dict:
+def run_rag_case(
+    case: dict, judge_on: bool, pacer: Pacer, tries: int = 4, retry_sleep=time.sleep, intent_model: bool = False
+) -> dict:
     rec = {
         "set": case["set"], "id": case["id"], "category": case["category"],
         "question": case["question"], "in_scope": case["in_scope"],
         "expected_source": case["expected_source"],
         "distances": [], "best_distance": None, "escalate": None, "citations": [], "answer": "",
         "latency": None, "faithfulness": None, "relevance": None, "judge_errors": [], "error": None,
+        "expected_intent": case.get("expected_intent"), "intent": None, "intent_confidence": None,
+        "intent_source": None, "output_action": None, "output_reasons": [],
     }
     durations: list[float] = []
 
@@ -159,16 +166,29 @@ def run_rag_case(case: dict, judge_on: bool, pacer: Pacer, tries: int = 4, retry
         return with_retry(attempt, tries=tries, sleep=retry_sleep, no_retry=(ProviderUnavailable,))
 
     try:
+        # The intent: rules only unless --intent-model, so this costs no Gemini call by default
+        if intent_model:
+            pacer.wait()
+        found = classify(case["question"], use_model=intent_model)
+        rec.update(intent=found.name, intent_confidence=round(found.confidence, 2), intent_source=found.source)
+
         chunks = call(lambda: retrieve(case["question"]))
         retrieve_time = durations[-1]
         rec["distances"] = [round(c["distance"], 3) for c in chunks]
         rec["best_distance"] = min(c["distance"] for c in chunks) if chunks else None
 
-        result = call(lambda: answer(case["question"], chunks))
+        result = call(lambda: answer(case["question"], chunks, keep_raw=True))
         rec.update(
             escalate=result["escalate"], citations=result["citations"], answer=result["answer"],
             latency=retrieve_time + durations[-1],
         )
+        check = result.get("output_check")
+        if check:
+            rec.update(output_action=check["action"], output_reasons=check["reasons"])
+            if check["action"] != "pass":
+                # what the model was given and what it said, so a blocked answer can be reviewed by hand
+                rec["retrieved_sources"] = sorted({c["metadata"].get("source") for c in select_chunks(chunks)})
+                rec["raw_answer"] = result.get("raw_answer", "")
 
         if judge_on and not result["escalate"]:
             context = build_context(select_chunks(chunks))
@@ -243,6 +263,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-judge", action="store_true")
     p.add_argument("--pause", type=float, default=DEFAULT_PAUSE)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    p.add_argument("--intent-model", action="store_true")
     p.add_argument("--max-provider-failures", type=int, default=DEFAULT_MAX_PROVIDER_FAILURES)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -264,6 +285,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.dry_run:
             print("  ids: " + ", ".join(c["id"] for c in rag_cases))
     print("Gemini calls: " + call_budget(total, judge_on))
+    if args.intent_model:
+        print("  plus one small classifier call per question the rules are not sure about (--intent-model)")
     if args.dry_run:
         return
 
@@ -294,7 +317,7 @@ def run_all(args, plan: dict, names: list[str], judge_on: bool, raw_argv: list[s
             if old and not old.get("error") and old["question"] == case["question"]:
                 rec, tag = old, "saved"
             else:
-                rec, tag = run_rag_case(case, judge_on, pacer), "done"
+                rec, tag = run_rag_case(case, judge_on, pacer, intent_model=args.intent_model), "done"
                 save_record(name, rec)
                 fresh_calls += 1
             status = f"error {rec['error']}" if rec["error"] else ("escalated" if rec["escalate"] else "answered")

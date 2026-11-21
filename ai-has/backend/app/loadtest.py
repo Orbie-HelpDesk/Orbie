@@ -151,7 +151,7 @@ async def run_requests(client: httpx.AsyncClient, plan: list[str], concurrency: 
 
 
 def _stub_answer(mock_latency_ms: float):
-    def answer(question: str, chunks=None) -> dict:
+    def answer(question: str, chunks=None, **kwargs) -> dict:
         if mock_latency_ms:
             time.sleep(mock_latency_ms / 1000)
         return {"answer": "mock answer", "citations": [], "escalate": False, "distances": []}
@@ -162,7 +162,7 @@ def _stub_answer(mock_latency_ms: float):
 def _retrieval_only_answer():
     from .rag import MAX_DISTANCE, NOT_FOUND_MESSAGE, retrieve
 
-    def answer(question: str, chunks=None) -> dict:
+    def answer(question: str, chunks=None, **kwargs) -> dict:
         found = retrieve(question)
         best = min((c["distance"] for c in found), default=None)
         escalate = best is None or best > MAX_DISTANCE
@@ -182,10 +182,14 @@ async def run_in_process(mode: str, plan: list[str], concurrency: int, mock_late
     from .auth import current_user
     from .config import settings
 
-    saved = (app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats)
+    saved = (
+        app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats,
+        settings.intent_use_model,
+    )
     app_main.answer = _stub_answer(mock_latency_ms) if mode == "mock" else _retrieval_only_answer()
     # Both in-process modes promise no chat model call, so the action step is off too.
-    app_main.propose_action = lambda question: None
+    app_main.propose_action = lambda question, intent_name: None
+    settings.intent_use_model = False  # the rules classify, so no classifier call either
     settings.rate_limit_enabled = False
     settings.persist_chats = False  # the test must not write conversations
     # The route needs a logged-in user. Here it is a fixed one, so no database is used.
@@ -195,7 +199,10 @@ async def run_in_process(mode: str, plan: list[str], concurrency: int, mock_late
         async with httpx.AsyncClient(transport=transport, base_url="http://loadtest", timeout=120) as client:
             return await run_requests(client, plan, concurrency)
     finally:
-        app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats = saved
+        (
+            app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats,
+            settings.intent_use_model,
+        ) = saved
         app_main.app.dependency_overrides.pop(current_user, None)
 
 
