@@ -56,6 +56,7 @@ flowchart LR
 | Chat history | `chatlog.py` | Saves each exchange (redacted text, citations, confidence, latency, intent, outcome, flags), lists, reads and deletes conversations, stores thumbs. Failures never stop an answer |
 | Analytics | `analytics.py`, `GET /stats/analytics` | Questions per day, deflection rate, median and p95 latency, thumbs share, top cited articles, most escalated questions. Staff only |
 | Knowledge base page | `kb.py`, `ingest.py`, HTML, CSS, JS in `frontend/kb/` | Admin-only list, markdown editor, save with re-index of one article, delete and a retrieval test box. The script and the page share `ingest.prepare_article` and `ingest.store_article`. Changes need a local database unless `KB_EDIT_ALLOW_REMOTE` is true |
+| Demo data | `seed_demo.py` | Fills the local database with synthetic tickets, conversations and ratings for screenshots and the defense. Local database only, with no override option. `--reset` (typed confirmation) clears the demo tables but never users or the knowledge base. Marked in `audit_logs` as `demo_seeded`. Not real usage |
 | Retention | `purge_old.py` | Replaces old message text and conversation titles with `[purged]`, keeps the numbers. Local database unless `--allow-remote` |
 | Audit | `audit.py` | One place that writes `audit_logs` rows without personal data |
 | Rate limit and security | `ratelimit.py`, middleware in `main.py` | Per-IP rate limits on `/chat` and `/tickets`, security headers on every response, generic 500 for unhandled errors |
