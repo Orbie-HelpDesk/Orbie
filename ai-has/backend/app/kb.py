@@ -79,7 +79,7 @@ def path_for(source: str) -> Path:
 
 def require_editable() -> None:
     """Changing the knowledge base needs a local database, unless KB_EDIT_ALLOW_REMOTE is switched on."""
-    if settings.kb_edit_allow_remote or is_local_db(settings.database_url):
+    if can_edit():
         return
     raise KbError(
         403,
@@ -106,6 +106,21 @@ def normalize_content(content: str) -> str:
 def _article_files() -> list[Path]:
     base = folder()
     return sorted(p for p in base.glob("*.md") if NAME_RE.match(p.name) and not p.is_symlink())
+
+
+def can_edit() -> bool:
+    return settings.kb_edit_allow_remote or is_local_db(settings.database_url)
+
+
+def info() -> dict:
+    """What the page needs to know: the limits, and whether changes are allowed on this database."""
+    return {
+        "max_bytes": settings.kb_max_bytes,
+        "max_articles": settings.kb_max_articles,
+        "max_distance": rag.MAX_DISTANCE,
+        "editable": can_edit(),
+        "name_pattern": NAME_RE.pattern,
+    }
 
 
 # ---------- reading ----------

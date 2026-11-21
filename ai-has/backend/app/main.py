@@ -114,6 +114,7 @@ class NoCacheStaticFiles(StaticFiles):
 FRONTEND_DIR = Path("/frontend")
 CHAT_DIR = FRONTEND_DIR / "chat"
 ADMIN_DIR = FRONTEND_DIR / "admin"
+KB_PAGE_DIR = FRONTEND_DIR / "kb"
 LOGIN_DIR = FRONTEND_DIR / "login"
 
 # Chat page files: /static/styles.css, /static/app.js, /static/field.js
@@ -121,6 +122,9 @@ app.mount("/static", NoCacheStaticFiles(directory=CHAT_DIR, check_dir=False), na
 
 # Admin page files: /admin-assets/admin.css, /admin-assets/admin.js
 app.mount("/admin-assets", NoCacheStaticFiles(directory=ADMIN_DIR, check_dir=False), name="admin-assets")
+
+# Knowledge base page files: /kb-assets/kb.css, /kb-assets/kb.js
+app.mount("/kb-assets", NoCacheStaticFiles(directory=KB_PAGE_DIR, check_dir=False), name="kb-assets")
 
 # Login page files: /login-assets/login.css, /login-assets/login.js
 app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=False), name="login-assets")
@@ -165,6 +169,12 @@ FORBIDDEN_PAGE = """<!doctype html>
 </body></html>"""
 
 
+FORBIDDEN_KB_PAGE = FORBIDDEN_PAGE.replace(
+    "The dashboard is for agents and admins. Your account does not have that role.",
+    "The knowledge base page is for admins only. Your account does not have that role.",
+).replace("<p><a href=\"/\">Back to the chat</a></p>", "<p><a href=\"/admin\">Back to the dashboard</a> or <a href=\"/\">the chat</a></p>")
+
+
 def _to_login(path: str) -> RedirectResponse:
     target = "/login" if path == "/" else f"/login?next={path}"
     return RedirectResponse(target, status_code=302, headers=NO_CACHE)
@@ -185,6 +195,17 @@ def admin(request: Request):
     if user["role"] not in STAFF:
         return HTMLResponse(FORBIDDEN_PAGE, status_code=403, headers=NO_CACHE)
     return FileResponse(ADMIN_DIR / "admin.html", headers=NO_CACHE)
+
+
+@app.get("/admin/kb")
+def kb_page(request: Request):
+    """The knowledge base page. Admins only: an agent or an employee gets the 403 page."""
+    user = user_from_request(request)
+    if user is None:
+        return _to_login("/admin/kb")
+    if user["role"] != "admin":
+        return HTMLResponse(FORBIDDEN_KB_PAGE, status_code=403, headers=NO_CACHE)
+    return FileResponse(KB_PAGE_DIR / "kb.html", headers=NO_CACHE)
 
 
 @app.get("/login")
@@ -549,6 +570,12 @@ def kb_body_size(request: Request) -> None:
 @app.get("/kb")
 def kb_list(admin: dict = Depends(require_admin)):
     return kb.list_articles()
+
+
+@app.get("/kb/info")
+def kb_info(admin: dict = Depends(require_admin)):
+    """The limits, and whether changes are allowed on this database. For the page."""
+    return kb.info()
 
 
 @app.post("/kb/test", dependencies=[Depends(limit_kb)])
