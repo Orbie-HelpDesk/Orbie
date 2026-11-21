@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import audit, chatlog, proposals
+from . import analytics, audit, chatlog, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -212,6 +212,12 @@ def me(response: Response, user: dict = Depends(current_user)):
 @app.get("/stats", dependencies=[Depends(require_staff)])
 def stats():
     return get_stats()
+
+
+@app.get("/stats/analytics", dependencies=[Depends(require_staff)])
+def stats_analytics(days: int = Query(30, ge=1, le=365)):
+    """Questions per day, deflection, latency, thumbs, top articles and top escalated questions."""
+    return analytics.compute(days)
 
 
 @app.get("/health")

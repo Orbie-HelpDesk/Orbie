@@ -14,6 +14,7 @@ from .db import engine
 logger = logging.getLogger(__name__)
 
 BLOCKED_TEXT = "[blocked message]"
+PURGED_TEXT = "[purged]"  # what purge_old leaves in place of old message text
 TITLE_LENGTH = 60
 # Same scale as the confidence gauge in the chat: distance 0.5 is 0 percent, 0.25 is 100 percent.
 CONFIDENCE_FAR = 0.5
