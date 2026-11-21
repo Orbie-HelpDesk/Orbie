@@ -22,6 +22,7 @@ from .auth import (
 from .config import settings
 from .db import engine
 from .guardrails import check_input, redact_pii
+from .intent import ACTION_INTENTS, OUT_OF_SCOPE, UNKNOWN, classify
 from .passwords import MAX_PASSWORD_LENGTH
 from .rag import answer, propose_action
 from .ratelimit import limit_actions, limit_chat, limit_tickets
@@ -253,10 +254,23 @@ def health():
 ACTION_MESSAGE = "I can do that for you. Please review it and confirm below. Nothing happens until you do."
 
 
-def _store_proposal(user_email: str, clean_message: str) -> dict | None:
+REFUSAL_MESSAGE = (
+    "I can only help with IT questions, like passwords, VPN, software access, Wi-Fi, printers or email. "
+    "For anything else, please contact the right team."
+)
+CLARIFY_MESSAGE = (
+    "I want to be sure I help with the right thing. Could you tell me a bit more: what is not working, "
+    "on which device or app, and any error message you see?"
+)
+STILL_UNCLEAR_MESSAGE = (
+    "I still couldn't work out what you need. Would you like me to escalate this to a human agent?"
+)
+
+
+def _store_proposal(user_email: str, clean_message: str, intent_name: str) -> dict | None:
     """A stored proposal for this message, or None. Any failure falls back to a normal answer."""
     try:
-        raw = propose_action(clean_message)
+        raw = propose_action(clean_message, intent_name)
         if raw is None:
             return None
         return proposals.propose(user_email, raw["name"], raw["arguments"])
@@ -326,6 +340,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "escalate": False,
             "distances": [],
             "proposed_action": None,
+            "intent": None,
             "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": []},
         }
         # The raw text is never saved, only a placeholder with the blocked flag
@@ -339,38 +354,72 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     if found:
         print(f"[guardrail] redacted: {found}", flush=True)
 
-    # 3) Does the user ask for an action? The model may only propose it. It is stored for
-    #    this user and runs only after POST /actions/confirm.
+    # 3) What does the user want? Rules decide when they are sure. Only when they are not, one
+    #    small model call decides (see intent.py).
     guardrails = {"blocked": False, "reason": None, "redacted": found}
-    proposal = _store_proposal(user_email, clean)
-    if proposal:
-        response = {
-            "answer": ACTION_MESSAGE,
+    found_intent = classify(clean)
+    name = found_intent.name
+    shown_intent = found_intent.as_dict()
+
+    def plain(answer_text: str, escalate: bool = False) -> dict:
+        return {
+            "answer": answer_text,
             "citations": [],
-            "escalate": False,
+            "escalate": escalate,
             "distances": [],
-            "proposed_action": proposal,
+            "proposed_action": None,
+            "intent": shown_intent,
             "guardrails": guardrails,
         }
-        _save_exchange(
-            response, user, conversation_id, clean, started,
-            intent=chatlog.INTENT_ACTION, outcome=chatlog.OUTCOME_ACTION,
-        )
-        if response["conversation_id"] is not None:
-            try:
-                proposals.attach_conversation(proposal["id"], response["conversation_id"])
-            except Exception:
-                logger.exception("Could not link the proposed action to its conversation")
-        return response
 
-    # 4) Normal RAG flow, using only the cleaned text
+    # 3a) An action intent: offer the action. The model may only propose it. It is stored for this
+    #     user and runs only after POST /actions/confirm.
+    if name in ACTION_INTENTS:
+        proposal = _store_proposal(user_email, clean, name)
+        if proposal:
+            response = plain(ACTION_MESSAGE)
+            response["proposed_action"] = proposal
+            _save_exchange(
+                response, user, conversation_id, clean, started,
+                intent=name, outcome=chatlog.OUTCOME_ACTION,
+            )
+            if response["conversation_id"] is not None:
+                try:
+                    proposals.attach_conversation(proposal["id"], response["conversation_id"])
+                except Exception:
+                    logger.exception("Could not link the proposed action to its conversation")
+            return response
+        # No proposal (the model chose not to propose one, or it was not valid): the knowledge base answers
+
+    # 3b) Not about IT: a polite refusal, with no model call and no search
+    elif name == OUT_OF_SCOPE:
+        return _save_exchange(
+            plain(REFUSAL_MESSAGE), user, conversation_id, clean, started,
+            intent=name, outcome=chatlog.OUTCOME_REFUSED,
+        )
+
+    # 3c) Unclear: ask one clarifying question, and if the next answer is still unclear, escalate
+    elif name == UNKNOWN:
+        if chatlog.last_outcome(conversation_id) == chatlog.OUTCOME_CLARIFY:
+            return _save_exchange(
+                plain(STILL_UNCLEAR_MESSAGE, escalate=True), user, conversation_id, clean, started,
+                intent=name, outcome=chatlog.OUTCOME_ESCALATED, escalated=True,
+            )
+        return _save_exchange(
+            plain(CLARIFY_MESSAGE), user, conversation_id, clean, started,
+            intent=name, outcome=chatlog.OUTCOME_CLARIFY,
+        )
+
+    # 4) how_to and vpn_issue (and an action that was not offered): the knowledge base answers,
+    #    using only the cleaned text
     result = answer(clean)
     result["proposed_action"] = None
+    result["intent"] = shown_intent
     result["guardrails"] = guardrails
     escalated = bool(result["escalate"])
     return _save_exchange(
         result, user, conversation_id, clean, started,
-        intent=chatlog.INTENT_ESCALATED if escalated else chatlog.INTENT_ANSWERED,
+        intent=name,
         outcome=chatlog.OUTCOME_ESCALATED if escalated else chatlog.OUTCOME_ANSWERED,
         escalated=escalated,
     )

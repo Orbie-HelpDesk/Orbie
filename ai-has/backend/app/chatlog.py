@@ -120,6 +120,24 @@ def save_exchange(
     return {"conversation_id": conversation_id, "message_id": message_id}
 
 
+def last_outcome(conversation_id: int | None) -> str | None:
+    """What happened to the last assistant message of a conversation, or None. Never raises."""
+    if not conversation_id:
+        return None
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "select coalesce(outcome, intent) from messages "
+                    "where conversation_id = :c and role = 'assistant' order by id desc limit 1"
+                ),
+                {"c": conversation_id},
+            ).scalar()
+    except Exception:
+        logger.exception("Could not read the last outcome of conversation %s", conversation_id)
+        return None
+
+
 def mark_escalated(conversation_id: int) -> None:
     """A ticket was made from this conversation. Best effort: a failure is logged, not raised."""
     try:

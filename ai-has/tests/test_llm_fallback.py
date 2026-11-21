@@ -152,7 +152,7 @@ def route(monkeypatch, login_as, clock):
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
     limiter.reset()
     login_as("employee")
-    monkeypatch.setattr(main, "propose_action", lambda q: None)
+    monkeypatch.setattr(main, "propose_action", lambda q, intent: None)
     monkeypatch.setattr(rag, "retrieve", lambda q, k=4: [{"content": "c", "metadata": {"source": "vpn.md"}, "distance": 0.2, "score": 1}])
     monkeypatch.setattr(rag, "article_chunks", lambda source: [])
     yield TestClient(main.app, raise_server_exceptions=False)
