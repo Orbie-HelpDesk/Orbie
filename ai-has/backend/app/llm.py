@@ -10,6 +10,11 @@ Rules
 - Timeouts, connection errors, 429 and 500 to 504 are retried up to 2 times, after 1 s and 3 s.
 - 400, 401, 403, 404 and any other error are never retried on the same model.
 - A 429 that says the daily quota is used up is not retried either: waiting a few seconds will not help.
+- CHAT_MODEL_FALLBACK (optional): if the main model fails with 404, 429 (also a daily quota), 500 to
+  504, a timeout or a connection error, even after its retries, that model gets one attempt. It gets
+  at least FALLBACK_MIN_SECONDS even if the budget is used up, so total time is at most the budget
+  plus one short attempt. It is not tried after 400, 401 or 403, which a different model would not
+  fix. Embeddings have no fallback.
 - If everything fails, ProviderUnavailable is raised. Its message is fixed, so nothing from the
   provider can reach a user or a log.
 
@@ -33,6 +38,8 @@ RETRY_AFTER_SECONDS = 10
 BUSY_MESSAGE = "The AI service is busy right now. Please try again in a moment."
 
 RETRYABLE = {"timeout", "connection", "rate_limit", "server"}
+FALLBACK_KINDS = RETRYABLE | {"not_found", "quota"}
+FALLBACK_MIN_SECONDS = 10.0
 # Best effort: Gemini words a daily limit with "per day" or "daily" (for example RequestsPerDay).
 DAILY_QUOTA = re.compile(r"per[\s_-]*day|daily", re.IGNORECASE)
 
@@ -93,8 +100,8 @@ def _log_failure(model: str, kind: str, status: int | None, exc: Exception, atte
     )
 
 
-def _run(call, model: str, timeout: float, deadline: float) -> object:
-    """Calls call(model, timeout) with retries. Raises _Failed when it gives up."""
+def _run(call, model: str, timeout: float, deadline: float, retry: bool = True) -> object:
+    """Calls call(model, timeout), with retries unless retry is False. Raises _Failed when it gives up."""
     attempt = 0
     while True:
         remaining = deadline - _clock()
@@ -106,7 +113,7 @@ def _run(call, model: str, timeout: float, deadline: float) -> object:
             kind, status = classify(exc)
             _log_failure(model, kind, status, exc, attempt + 1)
             failure = _Failed(kind, status)
-        if kind not in RETRYABLE or attempt >= len(RETRY_DELAYS):
+        if not retry or kind not in RETRYABLE or attempt >= len(RETRY_DELAYS):
             raise failure from None
         delay = RETRY_DELAYS[attempt]
         if _clock() + delay >= deadline:
@@ -122,11 +129,21 @@ def chat(client, **kwargs):
     def call(model, timeout):
         return client.chat.completions.create(model=model, timeout=timeout, **kwargs)
 
+    model = settings.chat_model
     try:
-        response = _run(call, settings.chat_model, settings.chat_timeout_seconds, deadline)
+        response = _run(call, model, settings.chat_timeout_seconds, deadline)
     except _Failed as failed:
-        raise ProviderUnavailable(failed.kind, failed.status) from None
-    logger.info("chat answered by model=%s", settings.chat_model)
+        fallback = settings.chat_model_fallback.strip()
+        if not fallback or fallback == model or failed.kind not in FALLBACK_KINDS:
+            raise ProviderUnavailable(failed.kind, failed.status) from None
+        logger.warning("Main model failed (kind=%s), trying fallback model=%s once", failed.kind, fallback)
+        timeout = min(settings.chat_timeout_seconds, max(deadline - _clock(), FALLBACK_MIN_SECONDS))
+        try:
+            response = _run(call, fallback, timeout, _clock() + timeout, retry=False)
+        except _Failed:
+            raise ProviderUnavailable(failed.kind, failed.status) from None
+        model = fallback
+    logger.info("chat answered by model=%s", model)
     return response
 
 

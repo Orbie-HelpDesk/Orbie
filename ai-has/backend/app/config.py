@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     chat_model: str = "gemini-3.8-flash"
+    chat_model_fallback: str = ""  # optional second model, tried once if the main one fails
     embed_model: str = "gemini-embedding-001"
     embed_dimensions: int = 768
     database_url: str = ""
