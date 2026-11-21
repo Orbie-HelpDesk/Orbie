@@ -81,11 +81,11 @@ class TicketsEngine:
         if "from tickets t join users" in sql:
             return Rows([{
                 "id": 5, "summary": "VPN", "priority": "low", "status": "resolved", "source": "ai",
-                "created_at": self.created, "resolved_at": self.resolved,
+                "created_at": self.created, "resolved_at": self.resolved, "external_ref": "HELP-1234",
                 "email": "a@example.com", "name": "A",
             }, {
                 "id": 6, "summary": "Wi-Fi", "priority": "low", "status": "open", "source": "ai",
-                "created_at": self.created, "resolved_at": None, "email": "a@example.com", "name": "A",
+                "created_at": self.created, "resolved_at": None, "external_ref": None, "email": "a@example.com", "name": "A",
             }])
         if "for update" in sql:
             return Rows(value="open")

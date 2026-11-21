@@ -114,7 +114,7 @@ async function loadTickets() {
   body.innerHTML = "";
 
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">No tickets here yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty">No tickets here yet.</td></tr>';
     return;
   }
 
@@ -122,6 +122,7 @@ async function loadTickets() {
     const tr = document.createElement("tr");
     tr.append(
       cell(t.ref, "ref"),
+      cell(t.external_ref || "-", t.external_ref ? "jira" : "jira none"),
       cell(t.summary),
       cell(tag(t.priority)),
       cell(tag(t.status)),
@@ -268,7 +269,7 @@ function refresh() {
   loadStats().catch(() => {});
   loadTickets().catch(() => {
     $("rows").innerHTML =
-      '<tr><td colspan="7" class="empty">Could not load tickets.</td></tr>';
+      '<tr><td colspan="8" class="empty">Could not load tickets.</td></tr>';
   });
 }
 

@@ -86,7 +86,7 @@ def set_external_ref(ticket_id: int, external_ref: str) -> None:
 def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
     sql = (
         "select t.id, t.summary, t.priority, t.status, t.source, "
-        "t.created_at, t.resolved_at, u.email, u.name "
+        "t.created_at, t.resolved_at, t.external_ref, u.email, u.name "
         "from tickets t join users u on u.id = t.user_id "
     )
     params: dict = {"limit": limit}
@@ -106,6 +106,7 @@ def list_tickets(status: str | None = None, limit: int = 50) -> list[dict]:
             "priority": r["priority"],
             "status": r["status"],
             "source": r["source"],
+            "external_ref": r["external_ref"],  # Jira-style key such as HELP-1234, or None
             "created_at": as_utc(r["created_at"]),
             "resolved_at": as_utc(r["resolved_at"]),
             "requester": r["name"],
