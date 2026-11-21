@@ -13,6 +13,34 @@ fetch("/health")
     $("status").textContent = "Offline";
   });
 
+// ---------- Time ----------
+// The API sends UTC with an offset (2026-11-21T03:13:40+00:00). The browser turns it into the
+// viewer's local time. A string with no zone is read as UTC, never as local time.
+function parseTime(value) {
+  if (!value) return null;
+  // Python sends microseconds. Some browsers only accept milliseconds, so cut the extra digits.
+  const text = value.replace(/(\.\d{3})\d+/, "$1");
+  const hasZone = /[zZ]$|[+-]\d\d:?\d\d$/.test(text);
+  const d = new Date(hasZone ? text : text + "Z");
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function fmtTime(value) {
+  const d = parseTime(value);
+  return d ? d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "-";
+}
+
+// The viewer's time zone (for example Asia/Singapore), so "today" and the daily chart follow
+// their day. The server checks the name and falls back to UTC if the query is left out.
+function zoneQuery() {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return zone ? "tz=" + encodeURIComponent(zone) : "";
+  } catch (e) {
+    return "";
+  }
+}
+
 // ---------- Helpers ----------
 function tag(kind) {
   const s = document.createElement("span");
@@ -40,7 +68,7 @@ function actionButton(label, onClick, primary) {
 
 // ---------- Data ----------
 async function loadStats() {
-  const res = await fetch("/stats");
+  const res = await fetch("/stats?" + zoneQuery());
   const s = await res.json();
 
   $("k-total").textContent = s.total;
@@ -98,13 +126,7 @@ async function loadTickets() {
       cell(tag(t.priority)),
       cell(tag(t.status)),
       cell(t.requester || ""),
-      cell(
-        new Date(t.created_at).toLocaleString([], {
-          dateStyle: "medium",
-          timeStyle: "short",
-        }),
-        "when"
-      )
+      cell(fmtTime(t.created_at), "when")
     );
 
     const actions = document.createElement("div");
@@ -213,7 +235,7 @@ function drawTop(id, rows, labelOf, emptyText) {
 async function loadAnalytics() {
   const note = $("a-note");
   note.hidden = true;
-  const res = await fetch("/stats/analytics?days=" + days);
+  const res = await fetch("/stats/analytics?days=" + days + "&" + zoneQuery());
   if (!res.ok) throw new Error(res.status);
   const a = await res.json();
 
