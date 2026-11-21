@@ -10,18 +10,24 @@ Options:
     --limit N                  only N evenly spaced retrieval questions per set (guardrail checks are free and all run)
     --no-judge                 skip faithfulness and relevance scoring (saves 2 calls per answer)
     --pause SECONDS            minimum gap between Gemini calls (default 1.0)
-    --timeout SECONDS          give up on one Gemini call after this long (default 90)
+    --timeout SECONDS          give up on one Gemini call after this long (default 90). Also the
+                               timeout and total time of the search and answer calls in this run
+    --max-provider-failures N  stop after N questions in a row fail because the AI service answered
+                               429, 503 or timed out (default 3, 0 never stops)
     --resume                   reuse results saved by an earlier run that stopped early
     --dry-run                  print what would run and the most Gemini calls it could use, then stop
     --report PATH              where to write the report (default eval_data/report.md)
 
 Every Gemini call is retried with exponential backoff. Each result is saved to
-eval_data/.cache as soon as it is known, so one failed call does not lose the run.
+eval_data/.cache as soon as it is known, so one failed call does not lose the run. If the AI
+service keeps failing, the run stops with a message instead of hanging, and the same command with
+--resume carries on from the saved results.
 """
 import argparse
 import datetime
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -31,6 +37,7 @@ from .eval_metrics import extract_section, recommend, sample_evenly, sweep, with
 from .eval_report import build_report
 from .guardrails import check_input, redact_pii
 from .ingest import client
+from .llm import ProviderUnavailable
 from .rag import MAX_DISTANCE, answer, build_context, retrieve, select_chunks
 
 DATA = Path(__file__).parent / "eval_data"
@@ -38,6 +45,11 @@ CACHE_DIR = DATA / ".cache"
 DEFAULT_REPORT = DATA / "report.md"
 DEFAULT_PAUSE = 1.0
 DEFAULT_TIMEOUT = 90.0
+DEFAULT_MAX_PROVIDER_FAILURES = 3
+# Errors that mean the AI service itself is struggling. The judge records only the class name.
+PROVIDER_ERRORS = (
+    "ProviderUnavailable", "RateLimitError", "InternalServerError", "APITimeoutError", "APIConnectionError",
+)
 TITLES = {"generated": "Generated set", "hard": "Hard set"}
 
 INJECTIONS = [
@@ -143,7 +155,8 @@ def run_rag_case(case: dict, judge_on: bool, pacer: Pacer, tries: int = 4, retry
             durations.append(time.time() - t0)
             return out
 
-        return with_retry(attempt, tries=tries, sleep=retry_sleep)
+        # The search and answer already retried inside llm.py, so that is not repeated here
+        return with_retry(attempt, tries=tries, sleep=retry_sleep, no_retry=(ProviderUnavailable,))
 
     try:
         chunks = call(lambda: retrieve(case["question"]))
@@ -172,6 +185,24 @@ def run_rag_case(case: dict, judge_on: bool, pacer: Pacer, tries: int = 4, retry
         # Only the exception type is kept, never its message, so nothing sensitive is saved or printed.
         rec["error"] = type(e).__name__
     return rec
+
+
+def is_provider_failure(rec: dict) -> bool:
+    """True if this question failed because the AI service did (429, 5xx, timeout), not because of our code."""
+    if rec.get("error") in PROVIDER_ERRORS:
+        return True
+    return any(name in err for err in rec.get("judge_errors", []) for name in PROVIDER_ERRORS)
+
+
+def stop_message(failures: int, saved: int, total: int, argv: list[str]) -> str:
+    resume = argv if "--resume" in argv else argv + ["--resume"]
+    command = "python -m app.eval_run " + " ".join(resume)
+    return (
+        f"Stopped: the AI service failed {failures} questions in a row (rate limit, overloaded or timing out).\n"
+        f"{saved} of {total} questions have saved results in eval_data/.cache, and no report was written.\n"
+        "Wait a few minutes, check the quota and CHAT_MODEL (CHAT_MODEL_FALLBACK can help), then continue with:\n"
+        f"  {command}"
+    )
 
 
 # ---------- Saved progress ----------
@@ -212,9 +243,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-judge", action="store_true")
     p.add_argument("--pause", type=float, default=DEFAULT_PAUSE)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    p.add_argument("--max-provider-failures", type=int, default=DEFAULT_MAX_PROVIDER_FAILURES)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = p.parse_args(argv)
 
     judge_on = not args.no_judge
@@ -237,8 +270,20 @@ def main(argv: list[str] | None = None) -> None:
     # One slow call must not hang the run, and retries are handled here, not inside the SDK.
     client.timeout = args.timeout
     client.max_retries = 0
+    # The search and answer calls go through llm.py. --timeout is their limit in this run only.
+    previous = (settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds)
+    settings.chat_timeout_seconds = settings.embed_timeout_seconds = args.timeout
+    settings.llm_call_budget_seconds = max(settings.llm_call_budget_seconds, args.timeout)
+    try:
+        run_all(args, plan, names, judge_on, raw_argv)
+    finally:
+        settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds = previous
+
+
+def run_all(args, plan: dict, names: list[str], judge_on: bool, raw_argv: list[str]) -> None:
+    total = sum(len(v[0]) for v in plan.values())
     pacer = Pacer(args.pause)
-    sets, all_rag, fresh_calls = [], [], 0
+    sets, all_rag, fresh_calls, in_a_row = [], [], 0, 0
     for name, (rag_cases, guard_cases, full) in plan.items():
         if not args.resume and cache_path(name).exists():
             cache_path(name).unlink()
@@ -255,6 +300,12 @@ def main(argv: list[str] | None = None) -> None:
             status = f"error {rec['error']}" if rec["error"] else ("escalated" if rec["escalate"] else "answered")
             print(f"[eval] {name} {case['id']} {tag} {status}: {case['question'][:55]}", flush=True)
             records.append(rec)
+            if tag == "done":
+                in_a_row = in_a_row + 1 if is_provider_failure(rec) else 0
+                if args.max_provider_failures and in_a_row >= args.max_provider_failures:
+                    saved_ok = sum(1 for r in records + all_rag if not r["error"])
+                    print("\n" + stop_message(in_a_row, saved_ok, total, raw_argv), flush=True)
+                    raise SystemExit(2)
         guard_records = [run_guardrail_case(c) for c in guard_cases]
         note = ""
         if len(rag_cases) < full:

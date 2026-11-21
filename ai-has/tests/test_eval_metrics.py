@@ -144,3 +144,28 @@ def test_marked_sections_can_be_replaced_and_kept():
     assert "old results" not in updated
     assert updated.startswith("# Report")
     assert m.extract_section(report, "loadtest") is None
+
+
+def test_with_retry_does_not_retry_an_error_listed_in_no_retry():
+    waits, calls = [], []
+
+    def down():
+        calls.append(1)
+        raise ConnectionError("already retried inside")
+
+    with pytest.raises(ConnectionError):
+        m.with_retry(down, tries=4, base_delay=1, sleep=waits.append, no_retry=(ConnectionError,))
+    assert len(calls) == 1 and waits == []
+
+
+def test_with_retry_still_retries_other_errors_when_no_retry_is_given():
+    calls, waits = [], []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 2:
+            raise ValueError("x")
+        return "ok"
+
+    assert m.with_retry(flaky, tries=3, base_delay=1, sleep=waits.append, no_retry=(ConnectionError,)) == "ok"
+    assert waits == [1]

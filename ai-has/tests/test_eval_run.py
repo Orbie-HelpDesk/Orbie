@@ -179,3 +179,110 @@ def test_resume_retries_only_the_questions_that_failed(stubs, tmp_path):
     e.main(args + ["--resume"])
     assert stubs.retrieves == ["vpn"]  # only the failed one ran again
     assert "could not be evaluated" not in report.read_text(encoding="utf-8")
+
+
+# ---------- the AI service keeps failing ----------
+def provider_down(stubs, questions=None):
+    """Makes the search fail like an exhausted provider (llm.py raises this after its own retries)."""
+    from app.llm import ProviderUnavailable
+
+    original = stubs.retrieve
+
+    def retrieve(question):
+        stubs.retrieves.append(question)
+        if questions is None or question in questions:
+            raise ProviderUnavailable("rate_limit", 429)
+        stubs.retrieves.pop()
+        return original(question)
+
+    return retrieve
+
+
+def test_a_provider_failure_is_not_retried_again_by_the_runner(stubs, monkeypatch):
+    monkeypatch.setattr(e, "retrieve", provider_down(stubs))
+    waits = []
+    rec = e.run_rag_case(case(), judge_on=True, pacer=pacer(), tries=4, retry_sleep=waits.append)
+    assert rec["error"] == "ProviderUnavailable"
+    assert len(stubs.retrieves) == 1 and waits == []  # the call already retried inside llm.py
+    assert e.is_provider_failure(rec)
+
+
+def test_other_errors_are_not_counted_as_provider_failures(stubs):
+    stubs.fail_retrieve_for = {"my vpn is down"}
+    rec = e.run_rag_case(case(), judge_on=True, pacer=pacer(), tries=1, retry_sleep=lambda s: None)
+    assert rec["error"] == "RuntimeError" and not e.is_provider_failure(rec)
+
+
+def test_judge_errors_from_a_busy_provider_count_too():
+    assert e.is_provider_failure({"error": None, "judge_errors": ["faithfulness: judge call failed: RateLimitError"]})
+    assert not e.is_provider_failure({"error": None, "judge_errors": ["faithfulness: judge reply was not valid JSON"]})
+
+
+def test_the_run_stops_after_three_failures_in_a_row_with_a_clear_message(stubs, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(e, "retrieve", provider_down(stubs))
+    report = tmp_path / "report.md"
+    args = ["--set", "hard", "--pause", "0", "--report", str(report)]
+    with pytest.raises(SystemExit) as stop:
+        e.main(args)
+    out = capsys.readouterr().out
+    assert stop.value.code == 2
+    assert len(stubs.retrieves) == 3  # it did not go on through the other questions
+    assert "Stopped: the AI service failed 3 questions in a row" in out
+    assert "0 of 37 questions have saved results" in out and "no report was written" in out
+    assert "python -m app.eval_run --set hard --pause 0 --report" in out and "--resume" in out
+    assert not report.exists()
+    assert len((tmp_path / "cache" / "hard.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_a_success_in_between_resets_the_count(stubs, tmp_path, monkeypatch):
+    questions = [c["question"] for c in e.load_hard()[0]]
+    down = {questions[0], questions[1], questions[3], questions[4]}  # never three in a row
+    monkeypatch.setattr(e, "retrieve", provider_down(stubs, down))
+    report = tmp_path / "report.md"
+    e.main(["--set", "hard", "--pause", "0", "--report", str(report)])
+    assert report.exists()
+
+
+def test_resume_continues_from_the_saved_results_after_a_stop(stubs, tmp_path, monkeypatch):
+    questions = [c["question"] for c in e.load_hard()[0]]
+    report = tmp_path / "report.md"
+    args = ["--set", "hard", "--pause", "0", "--report", str(report)]
+
+    # the service answers 5 questions, then goes down
+    down = set(questions[5:])
+    monkeypatch.setattr(e, "retrieve", provider_down(stubs, down))
+    with pytest.raises(SystemExit):
+        e.main(args)
+    cache = tmp_path / "cache" / "hard.jsonl"
+    assert len(cache.read_text(encoding="utf-8").splitlines()) == 8  # 5 good, 3 failed
+
+    # it comes back: only the unfinished questions run, the 5 saved ones are reused
+    stubs.retrieves.clear()
+    monkeypatch.setattr(e, "retrieve", stubs.retrieve)
+    e.main(args + ["--resume"])
+    assert len(stubs.retrieves) == 32 and not set(questions[:5]) & set(stubs.retrieves)
+    assert report.exists()
+
+
+def test_zero_turns_the_stop_off(stubs, tmp_path, monkeypatch):
+    monkeypatch.setattr(e, "retrieve", provider_down(stubs))
+    report = tmp_path / "report.md"
+    e.main(["--set", "hard", "--limit", "5", "--pause", "0", "--max-provider-failures", "0", "--report", str(report)])
+    assert len(stubs.retrieves) == 5 and report.exists()
+
+
+def test_the_timeout_option_is_the_limit_for_search_and_answer_calls_only_during_the_run(stubs, tmp_path, monkeypatch):
+    from app.config import settings
+
+    before = (settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds)
+    seen = []
+    original = stubs.retrieve
+
+    def spy(question):
+        seen.append((settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds))
+        return original(question)
+
+    monkeypatch.setattr(e, "retrieve", spy)
+    e.main(["--set", "hard", "--limit", "2", "--pause", "0", "--timeout", "77", "--report", str(tmp_path / "r.md")])
+    assert seen[0] == (77, 77, 77)
+    assert (settings.chat_timeout_seconds, settings.embed_timeout_seconds, settings.llm_call_budget_seconds) == before
