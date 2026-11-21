@@ -1,4 +1,5 @@
 import logging
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -8,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import audit, proposals
+from . import audit, chatlog, proposals
 from .auth import (
     STAFF,
     authenticate,
@@ -107,11 +108,13 @@ app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=Fal
 
 class ChatRequest(BaseModel):
     message: str
+    conversation_id: int | None = Field(default=None, ge=1)  # continue this conversation, or start one
 
 
 class TicketRequest(BaseModel):
     summary: str = Field(min_length=3, max_length=500)
     priority: str = "medium"
+    conversation_id: int | None = Field(default=None, ge=1)  # the chat this ticket came from
 
 
 class StatusUpdate(BaseModel):
@@ -232,14 +235,62 @@ def _store_proposal(user_email: str, clean_message: str) -> dict | None:
         return None
 
 
+def _check_conversation(conversation_id: int | None, user_id: int) -> bool:
+    """True if saving is on for this request. 404 if the conversation is not the caller's.
+
+    A database failure does not stop the chat: the request is answered without saving.
+    """
+    if not settings.persist_chats:
+        return False
+    if conversation_id is None:
+        return True
+    try:
+        owned = chatlog.owns(conversation_id, user_id)
+    except Exception:
+        logger.exception("Could not check the conversation, so this exchange is not saved")
+        return False
+    if not owned:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return True
+
+
+def _save_exchange(response: dict, user: dict, conversation_id: int | None, user_text: str, started: float, **fields) -> dict:
+    """Saves the exchange and adds conversation_id and message_id to the response (null if not saved)."""
+    response["conversation_id"] = None
+    response["message_id"] = None
+    if conversation_id == 0:  # saving is off for this request
+        return response
+    try:
+        saved = chatlog.save_exchange(
+            user["id"],
+            conversation_id,
+            user_text,
+            response["answer"],
+            citations=response["citations"],
+            confidence=chatlog.confidence_from_distances(response["distances"]),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            **fields,
+        )
+    except Exception:
+        logger.exception("Could not save the chat exchange")
+        return response
+    response.update(saved)
+    return response
+
+
 @app.post("/chat", dependencies=[Depends(limit_chat)])
 def chat(req: ChatRequest, user: dict = Depends(current_user)):
+    started = time.perf_counter()
     user_email = user["email"]
+    saving = _check_conversation(req.conversation_id, user["id"])
+    # 0 means "do not save". Otherwise the conversation to continue, or None to start one.
+    conversation_id = (req.conversation_id if saving else 0)
+
     # 1) Block injection attempts and oversized messages
     verdict = check_input(req.message)
     if verdict["blocked"]:
         print(f"[guardrail] blocked: {verdict['reason']}", flush=True)
-        return {
+        response = {
             "answer": verdict["message"],
             "citations": [],
             "escalate": False,
@@ -247,6 +298,11 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "proposed_action": None,
             "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": []},
         }
+        # The raw text is never saved, only a placeholder with the blocked flag
+        return _save_exchange(
+            response, user, conversation_id, "", started,
+            intent=chatlog.blocked_intent(verdict["reason"]), blocked=True,
+        )
 
     # 2) Hide personal data before it reaches the AI or the database
     clean, found = redact_pii(req.message)
@@ -258,7 +314,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     guardrails = {"blocked": False, "reason": None, "redacted": found}
     proposal = _store_proposal(user_email, clean)
     if proposal:
-        return {
+        response = {
             "answer": ACTION_MESSAGE,
             "citations": [],
             "escalate": False,
@@ -266,22 +322,46 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "proposed_action": proposal,
             "guardrails": guardrails,
         }
+        _save_exchange(response, user, conversation_id, clean, started, intent=chatlog.INTENT_ACTION)
+        if response["conversation_id"] is not None:
+            try:
+                proposals.attach_conversation(proposal["id"], response["conversation_id"])
+            except Exception:
+                logger.exception("Could not link the proposed action to its conversation")
+        return response
 
     # 4) Normal RAG flow, using only the cleaned text
     result = answer(clean)
     result["proposed_action"] = None
-    result["guardrails"] = {"blocked": False, "reason": None, "redacted": found}
-    return result
+    result["guardrails"] = guardrails
+    escalated = bool(result["escalate"])
+    return _save_exchange(
+        result, user, conversation_id, clean, started,
+        intent=chatlog.INTENT_ESCALATED if escalated else chatlog.INTENT_ANSWERED, escalated=escalated,
+    )
 
 
 @app.post("/tickets", dependencies=[Depends(limit_tickets)])
 def new_ticket(req: TicketRequest, user: dict = Depends(current_user)):
     # Personal data never gets saved into a ticket
     clean, found = redact_pii(req.summary)
+    extra = {}
+    if req.conversation_id is not None and settings.persist_chats:
+        try:
+            owned = chatlog.owns(req.conversation_id, user["id"])
+        except Exception:
+            logger.exception("Could not check the conversation, so the ticket is not linked to it")
+            owned = None
+        if owned is False:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if owned:
+            extra["conversation_id"] = req.conversation_id
     try:
-        ticket = create_ticket(clean, req.priority, source="escalation", user_email=user["email"])
+        ticket = create_ticket(clean, req.priority, source="escalation", user_email=user["email"], **extra)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if extra:
+        chatlog.mark_escalated(req.conversation_id)
     ticket["redacted"] = found
     return ticket
 

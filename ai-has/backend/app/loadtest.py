@@ -15,7 +15,8 @@ Modes (the first lines of the output always say which one ran):
                   and the password in the LOADTEST_PASSWORD environment variable.
 
 In-process modes switch the rate limit off, because the test would otherwise measure the limiter.
-Modes that spend Gemini quota refuse to run without --yes.
+Modes that spend Gemini quota refuse to run without --yes. In-process modes never write conversations.
+In full mode start the server with PERSIST_CHATS=false, or every request is saved as a conversation.
 """
 import argparse
 import asyncio
@@ -181,11 +182,12 @@ async def run_in_process(mode: str, plan: list[str], concurrency: int, mock_late
     from .auth import current_user
     from .config import settings
 
-    saved = (app_main.answer, app_main.propose_action, settings.rate_limit_enabled)
+    saved = (app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats)
     app_main.answer = _stub_answer(mock_latency_ms) if mode == "mock" else _retrieval_only_answer()
     # Both in-process modes promise no chat model call, so the action step is off too.
     app_main.propose_action = lambda question: None
     settings.rate_limit_enabled = False
+    settings.persist_chats = False  # the test must not write conversations
     # The route needs a logged-in user. Here it is a fixed one, so no database is used.
     app_main.app.dependency_overrides[current_user] = lambda: LOADTEST_USER
     try:
@@ -193,7 +195,7 @@ async def run_in_process(mode: str, plan: list[str], concurrency: int, mock_late
         async with httpx.AsyncClient(transport=transport, base_url="http://loadtest", timeout=120) as client:
             return await run_requests(client, plan, concurrency)
     finally:
-        app_main.answer, app_main.propose_action, settings.rate_limit_enabled = saved
+        app_main.answer, app_main.propose_action, settings.rate_limit_enabled, settings.persist_chats = saved
         app_main.app.dependency_overrides.pop(current_user, None)
 
 
