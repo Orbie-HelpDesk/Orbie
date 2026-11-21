@@ -108,6 +108,10 @@ create index if not exists messages_conversation_idx on messages (conversation_i
 create index if not exists messages_created_idx on messages (created_at);
 create index if not exists conversations_user_idx on conversations (user_id, created_at);
 
+-- Added for the audit log page: newest first, filtered by action and by date. Additive.
+create index if not exists audit_logs_created_idx on audit_logs (created_at desc, id desc);
+create index if not exists audit_logs_action_idx on audit_logs (action, created_at desc);
+
 -- Cosine distance, matching the <=> operator used in rag.py.
 create index if not exists kb_chunks_embedding_idx
     on kb_chunks using hnsw (embedding vector_cosine_ops);
