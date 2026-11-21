@@ -19,13 +19,16 @@ def percentile(values: list[float], p: float) -> float | None:
     return ordered[min(len(ordered) - 1, int(len(ordered) * p / 100))]
 
 
-def with_retry(fn, tries: int = 4, base_delay: float = 2.0, sleep=time.sleep):
-    """Call fn(); on any error wait 2s, 4s, 8s ... and try again. Raises the last error."""
+def with_retry(fn, tries: int = 4, base_delay: float = 2.0, sleep=time.sleep, no_retry: tuple = ()):
+    """Call fn(); on any error wait 2s, 4s, 8s ... and try again. Raises the last error.
+
+    An error of a type in no_retry is raised at once (the call already retried inside).
+    """
     for attempt in range(tries):
         try:
             return fn()
-        except Exception:
-            if attempt == tries - 1:
+        except Exception as e:
+            if attempt == tries - 1 or (no_retry and isinstance(e, no_retry)):
                 raise
             sleep(base_delay * 2**attempt)
 

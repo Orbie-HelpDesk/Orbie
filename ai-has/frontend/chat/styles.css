@@ -575,6 +575,9 @@ body.chatting .hero { display: none; }
 .ticket-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 26px -8px rgba(108, 92, 231, 0.8); }
 .ticket-btn:disabled { opacity: 0.75; cursor: default; background: var(--green); box-shadow: none; }
 
+/* Try again after a failed answer. Waiting looks neutral, not like the green "done" state. */
+.retry-btn:disabled { opacity: 1; background: rgba(127, 127, 160, 0.16); color: var(--muted); }
+
 /* ---------- Proposed action card ---------- */
 .action-card {
   margin-top: 12px;

@@ -30,7 +30,7 @@ FastAPI (Python 3.12), SQLAlchemy 2, Google Gemini through its OpenAI-compatible
 | GET | `/auth/me` | The logged-in user `{id, email, name, role}`, or 401 |
 | GET | `/` | Chat page (any logged-in user, else redirect to `/login`) |
 | GET | `/admin` | Admin dashboard (agent or admin; employee gets 403, logged out is redirected) |
-| POST | `/chat` | Login required. Body `{message, conversation_id?}`. Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`), and `conversation_id` and `message_id` (null if saving is off or failed). 404 if the conversation is not yours |
+| POST | `/chat` | Login required. Body `{message, conversation_id?}`. Returns 503 with `Retry-After` when the AI provider is down (see "When the AI provider fails"). Guardrails, then hybrid search and answer. Returns `answer`, `citations`, `escalate`, `distances`, `guardrails`, `proposed_action` (null, or `{id, name, arguments, label}`), and `conversation_id` and `message_id` (null if saving is off or failed). 404 if the conversation is not yours |
 | GET | `/conversations` | Your conversations, most recently active first (`?limit=`, 1 to 100) |
 | GET | `/conversations/{id}` | The messages of a conversation. The owner, or an agent or admin (audited). Anyone else gets 404 |
 | DELETE | `/conversations/{id}` | Owner only. Deletes the messages and the conversation, and unlinks its tickets (audited) |
@@ -122,6 +122,32 @@ docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@
 For messages older than N days it replaces the text with `[purged]`, and for every conversation that has such a message it replaces the title too (the title comes from the first question). Rows, times, citations, confidence, latency, thumbs and the escalated flag stay, so the counts in the analytics survive, but the escalated question list drops purged questions. `--dry-run` only counts. It writes one `messages_purged` audit row with counts, refuses a database that is not `db` or `localhost` unless `--allow-remote` is given (only when the team lead has said to change data on Supabase), and prints counts only. It does not touch tickets, whose summaries are redacted but are business records, so they need their own retention decision.
 
 **Analytics.** `GET /stats/analytics?days=30&tz=Asia/Singapore` (agent or admin, 1 to 365 days, days counted in `tz`, UTC by default) feeds the Analytics section of the dashboard: questions per day, the deflection rate (`answered / (answered + escalated)`, with blocked messages and proposed actions left out), median and 95th percentile response time, the thumbs-up share (`up / (up + down)`), the most cited articles and the most escalated questions.
+
+## When the AI provider fails
+Every chat and embedding call goes through `backend/app/llm.py`, so a slow or failing Gemini cannot hang a request or show a raw error. The OpenAI client is built with `max_retries=0`. The SDK default is a 600 second timeout and silent retries, and retrying is done only in `llm.py`, where the waits are limited and logged.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `CHAT_TIMEOUT_SECONDS` | 30 | One chat attempt. **A slow model may need a higher value**, for example 60. Raise `LLM_CALL_BUDGET_SECONDS` with it, because an attempt never runs longer than the budget that is left |
+| `EMBED_TIMEOUT_SECONDS` | 20 | One embedding attempt |
+| `LLM_CALL_BUDGET_SECONDS` | 45 | Total time for one call, all retries included |
+| `CHAT_MODEL_FALLBACK` | empty | Optional second chat model. Use `docker compose run --rm backend python -m app.list_models` to see the names. Names come from `.env`, never from the code |
+
+**Retries.** A timeout, a connection error, 429 and 500 to 504 are retried up to 2 times, after 1 s and then 3 s, as long as the budget allows. 400, 401, 403, 404 and any other error are never retried on the same model. A 429 whose text says the daily quota is used up is not retried either. That check is a text match on "per day" or "daily", so if Gemini words it differently the cost is two extra retries of about 4 seconds.
+
+**Fallback model.** If `CHAT_MODEL_FALLBACK` is set and the main model fails with 404, 429 (including a daily quota), 500 to 504, a timeout or a connection error, even after its retries, the fallback model gets one attempt and no retries. It gets at least 10 seconds even if the budget is used up, so one call takes at most the budget plus one short attempt. It is not tried after 400, 401 or 403, which another model would not fix. Embeddings have no fallback. The log says which model answered, by name only.
+
+**When everything fails**, `POST /chat` returns HTTP 503 with `Retry-After: 10` and exactly:
+```json
+{"detail": "The AI service is busy right now. Please try again in a moment."}
+```
+The question is not saved in that case. The chat page shows that message with a Try again button, which stays disabled for the `Retry-After` seconds and then sends the same question again. Any other failed answer (rate limit, network, a generic 500) gets the same button.
+
+**What is logged.** One line per failed attempt: the model name, a kind (`timeout`, `rate_limit`, `quota`, `server`, `not_found`, `bad_request`, `auth`, `connection`), the status code, the error class name and the attempt number. The error text, the response body, the URL and any key are never logged, and the original error is not attached to the one that is raised, so a traceback cannot print them either.
+
+**Action detection** (`rag.propose_action`) is an extra chat call, so it is limited: it is skipped when the message starts with how, what or why (an informational question), and otherwise it makes a single attempt with the main model, with no retries and no fallback model. If that attempt fails, the rule-based trigger decides, as before.
+
+**Evaluation runner.** `eval_run` does not retry a search or answer that already retried inside `llm.py`. After `--max-provider-failures` questions in a row fail because the provider answered 429, 503 or timed out (default 3, `0` never stops), it stops with a message that says how many results are saved and which command to run next, and it writes no report. The saved results stay in `eval_data/.cache`, so the same command with `--resume` carries on. `--timeout` is also the timeout and total time of the search and answer calls during the run.
 
 ## Quick start (Supabase)
 ```bash
@@ -230,7 +256,7 @@ docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set
 docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set hard --limit 10
 docker compose run --rm -e DATABASE_URL=... backend python -m app.eval_run --set all
 ```
-Options: `--set generated|hard|all` (default `generated`), `--limit N` (evenly spaced sample of retrieval questions; guardrail checks cost nothing and always run), `--no-judge` (skip the two judge calls per answer), `--pause` (seconds between calls, default 1), `--timeout` (seconds per call, default 90), `--resume`, `--dry-run`, `--report PATH`.
+Options: `--set generated|hard|all` (default `generated`), `--limit N` (evenly spaced sample of retrieval questions; guardrail checks cost nothing and always run), `--no-judge` (skip the two judge calls per answer), `--pause` (seconds between calls, default 1), `--timeout` (seconds per call, default 90, also the limit for search and answer calls in the run), `--max-provider-failures N` (stop after N questions in a row fail because the AI service is busy or down, default 3, 0 never stops), `--resume`, `--dry-run`, `--report PATH`.
 
 Each call is retried with exponential backoff, and every result is saved to `eval_data/.cache` (git-ignored) as soon as it is known. If a run stops, `--resume` reuses the saved results and only repeats questions that failed. Calls per question: 1 embedding, 1 chat (only if the best match is close enough) and 2 judge calls (only for answered questions). The report is written to `eval_data/report.md` with the date and a "How to read this" section.
 
@@ -321,7 +347,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -331,7 +357,7 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
 - `frontend/chat/`, `frontend/admin/` and `frontend/login/`: the three pages (`chat/session.js` is shared by chat and admin)
 - `kb/`: IT knowledge base SOPs (markdown)

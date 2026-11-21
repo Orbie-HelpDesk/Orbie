@@ -5,7 +5,7 @@ import time
 
 from sqlalchemy import text
 
-from .config import settings
+from . import llm
 from .db import engine
 from .ingest import client, embed
 
@@ -131,8 +131,8 @@ def answer(question: str, chunks: list[dict] | None = None) -> dict:
 
     chunks = select_chunks(chunks)
     context = build_context(chunks)
-    res = client.chat.completions.create(
-        model=settings.chat_model,
+    res = llm.chat(
+        client,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {question}"},
@@ -166,6 +166,10 @@ ACTION_HINT = re.compile(
     r"(?i)\b(tickets?|reset\w*\s+(my\s+|the\s+)?(password|account)|password\s+reset|"
     r"forgot\w*\s+(my\s+)?password|locked\s+out|unlock\s+my|escalate|human\s+agent)\b"
 )
+
+# A message that starts with how, what or why is a question for information, not a request to do
+# something, so the extra action-detection call is skipped to save quota.
+INFORMATIONAL = re.compile(r"^\W*(how|what|why)\b", re.IGNORECASE)
 
 ACTION_PROMPT = """You decide whether the user is asking you to DO something: open a support ticket, or send a password reset link for their own account.
 Rules:
@@ -240,22 +244,26 @@ def _parse_tool_call(message) -> dict | None:
 def propose_action(question: str) -> dict | None:
     """Returns {name, arguments} if the user is clearly asking for an action, else None.
 
-    Makes one model call, and only when the message matches ACTION_HINT. The caller must
-    store the proposal and ask the user to confirm: this function never runs anything.
+    Makes one model call, and only when the message matches ACTION_HINT and does not start with
+    how, what or why. It is a single attempt: no retries and no fallback model, because the
+    rule-based trigger is the plan B and a slow provider must not hold the chat up twice. The
+    caller must store the proposal and ask the user to confirm: this function never runs anything.
     """
-    if not ACTION_HINT.search(question):
+    if INFORMATIONAL.match(question) or not ACTION_HINT.search(question):
         return None
     try:
-        res = client.chat.completions.create(
-            model=settings.chat_model,
+        res = llm.chat(
+            client,
+            single_attempt=True,
             messages=[
                 {"role": "system", "content": ACTION_PROMPT},
                 {"role": "user", "content": question},
             ],
             tools=TOOLS,
         )
-    except Exception:
-        logger.warning("Tool calling failed, using the rule-based trigger", exc_info=True)
+    except Exception as exc:
+        # Only the error type is logged: an error text can hold the provider's response body
+        logger.warning("Tool calling failed (%s), using the rule-based trigger", type(exc).__name__)
         return rule_based_proposal(question)
 
     message = res.choices[0].message

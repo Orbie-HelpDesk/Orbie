@@ -13,6 +13,9 @@ flowchart LR
     RAG <--> DB[(PostgreSQL + pgvector<br/>Supabase)]
     RAG --> LLM[Gemini<br/>grounded answer + citations]
     LLM --> FE
+    LLM -.->|429, 5xx, timeout: retries,<br/>then fallback model| LL[llm.py]
+    LL -->|still failing| BZ[503 + Retry-After]
+    BZ --> FE
     RAG -->|no good match / NO_ANSWER| NF[Not found, escalate=true]
     NF --> FE
     FE -->|Create a ticket: POST /tickets| TK[Ticket service<br/>PII redacted]
@@ -55,6 +58,7 @@ flowchart LR
 | n8n | `n8nio/n8n`, compose profile `n8n`, `n8n/*.json` | Mock Jira key and mock Active Directory reset. Published on 127.0.0.1:5678 only |
 | Database | PostgreSQL with pgvector on Supabase | KB chunks and vectors, users, tickets, `pending_actions`, `audit_logs`, and the saved `conversations` and `messages` |
 | LLM | Gemini via OpenAI-compatible endpoint | Embeddings and answers; model names come from `.env` |
+| Provider calls | `llm.py` | Every chat and embedding call: a timeout per attempt, a total budget, up to 2 retries (1 s, 3 s) on timeouts, 429 and 5xx, an optional one-shot fallback model, and a fixed `ProviderUnavailable` that becomes HTTP 503 with `Retry-After`. Logs model, kind, status and error class only |
 | Local test DB | `pgvector/pgvector:pg16`, compose profile `local-db` | Testing without touching Supabase |
 | Evaluation | `eval_run.py`, `eval_judge.py`, `eval_metrics.py`, `eval_report.py`, `eval_generate.py` | Generated and hand-written hard question sets, retrieval accuracy, deflection, escalation, guardrails, LLM-judged faithfulness and relevance, MAX_DISTANCE sweep, retries and resumable runs |
 | Load test | `loadtest.py` | Requests per second, error rate and latency percentiles for `POST /chat`, in mock, retrieval-only or full mode |
@@ -67,7 +71,7 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 2. `redact_pii` replaces emails, phone numbers, valid card numbers, API keys and passwords with `[REDACTED]`. Only the cleaned text is used from here on.
 3. The question is embedded and hybrid search runs over `kb_chunks` (vector distance plus full-text, merged by rank).
 4. If the best distance is above 0.5, the API returns the "not found" message with `escalate=true`.
-5. Otherwise the closest chunks go to Gemini with a prompt that allows answers only from that context.
+5. Otherwise the closest chunks go to Gemini with a prompt that allows answers only from that context. If Gemini fails after its retries (and the fallback model, if one is set), the request ends with HTTP 503 and the chat page offers Try again.
 6. If the model replies NO_ANSWER, the API returns "not found" with `escalate=true`. Else it returns the answer, citations, distances and what was redacted.
 
 ## Request flow: login and roles
@@ -86,6 +90,15 @@ Docker compose runs one service, `backend`, plus `db` under the `local-db` profi
 5. If any database step fails, the answer is still returned with `conversation_id: null`. `PERSIST_CHATS=false` skips all of this.
 6. The chat page sends the conversation id back with each question, rates answers through `PATCH /messages/{id}/feedback`, and loads its history from `GET /conversations`, falling back to the browser history.
 7. `GET /conversations/{id}` is for the owner, or for staff (audited as `conversation_read`). `DELETE /conversations/{id}` is for the owner only and unlinks its tickets.
+
+## Request flow: a provider failure
+1. `rag.answer` and `rag.retrieve` call `llm.chat` and `llm.embeddings`. Each attempt gets a timeout (`CHAT_TIMEOUT_SECONDS` or `EMBED_TIMEOUT_SECONDS`, cut to the time left in `LLM_CALL_BUDGET_SECONDS`).
+2. A timeout, connection error, 429 or 500 to 504 is retried after 1 s and then 3 s. 400, 401, 403, 404 and a daily-quota 429 are not retried on the same model.
+3. If the main model still fails with 404, 429, 5xx or a timeout and `CHAT_MODEL_FALLBACK` is set, that model gets one attempt (at least 10 s). Embeddings have no fallback.
+4. If nothing worked, `ProviderUnavailable` is raised with a fixed message and no attached error. An app-level handler turns it into 503, `Retry-After: 10` and the busy message. Nothing is saved for that question.
+5. The log has one line per failed attempt (model, kind, status, error class, attempt number), never the error text, body, URL or key.
+6. The chat page shows the message with a Try again button that waits out the `Retry-After`, then resends the same question without adding a second copy of it.
+7. The optional action-detection call is skipped for how, what and why questions and makes one attempt only, with the rule-based trigger as plan B. The evaluation runner stops after repeated provider failures and resumes with `--resume`.
 
 ## Request flow: actions
 1. After the guardrails, if the cleaned message matches a keyword check, one extra model call offers the two tools. A message that does not match costs nothing extra.
