@@ -27,6 +27,7 @@ const ICONS = {
   ticket:
     '<path d="M3 9V6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v3a3 3 0 0 0 0 6v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a3 3 0 0 0 0-6z"/><path d="M13 5v14" stroke-dasharray="2 3"/>',
   check: '<path d="M20 6L9 17l-5-5"/>',
+  retry: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   thumb:
     '<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>',
 };
@@ -416,12 +417,13 @@ function renderUser(m) {
 
 function renderBot(m, animate, onDone) {
   const d = m.data;
-  const kind = d.escalate ? "alert" : "bot";
+  const alert = d.escalate || d.failed;
+  const kind = alert ? "alert" : "bot";
   const blocked = d.guardrails && d.guardrails.blocked;
 
   const msg = document.createElement("div");
   msg.className = `msg ${kind}`;
-  msg.innerHTML = `<div class="orb${d.escalate ? " alert" : ""}" style="--s:34px">${EYES}</div>
+  msg.innerHTML = `<div class="orb${alert ? " alert" : ""}" style="--s:34px">${EYES}</div>
     <div class="col"><div class="bubble"></div><div class="meta"></div></div>`;
   streamEl.appendChild(msg);
 
@@ -430,7 +432,9 @@ function renderBot(m, animate, onDone) {
 
   fillBubble(bubble, d.answer, animate, () => {
     if (d.distances && d.distances.length) bubble.appendChild(buildTrace(d));
-    if (d.proposed_action) {
+    if (d.failed) {
+      bubble.appendChild(buildRetryButton(m, msg));
+    } else if (d.proposed_action) {
       bubble.appendChild(buildActionCard(m));
     } else if (d.escalate) {
       bubble.appendChild(buildTicketButton(m));
@@ -441,6 +445,41 @@ function renderBot(m, animate, onDone) {
     if (onDone) onDone();
   });
   scrollDown();
+}
+
+// A failed answer (the AI service is busy, rate limit, network) gets a Try again button that sends
+// the same question again. It stays disabled for the Retry-After seconds the server asked for.
+function buildRetryButton(record, msgEl) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ticket-btn retry-btn";
+
+  const waitLeft = () =>
+    Math.max(0, Math.ceil((record.data.retryAfter || 0) - (Date.now() - record.ts) / 1000));
+
+  const label = () => {
+    const left = waitLeft();
+    btn.disabled = left > 0;
+    btn.innerHTML = icon("retry");
+    btn.append(left > 0 ? `Try again in ${left}s` : "Try again");
+    return left;
+  };
+
+  if (label() > 0) {
+    const timer = setInterval(() => {
+      if (!btn.isConnected || label() === 0) clearInterval(timer);
+    }, 1000);
+  }
+
+  btn.onclick = () => {
+    if (busy || btn.disabled) return;
+    // Remove the failed answer, then ask the same question again. The question itself stays.
+    current.messages = current.messages.filter((x) => x !== record);
+    msgEl.remove();
+    persist();
+    ask(record.question, true);
+  };
+  return btn;
 }
 
 function showThinking() {
@@ -473,7 +512,22 @@ function showThinking() {
 }
 
 // ---------- Sending a question ----------
-async function ask(question) {
+const BUSY_MESSAGE = "The AI service is busy right now. Please try again in a moment.";
+
+// An answer record for a request that failed, with how many seconds to wait before trying again
+function failedAnswer(message, res) {
+  const wait = res ? parseInt(res.headers.get("Retry-After"), 10) : 0;
+  return {
+    answer: message,
+    citations: [],
+    escalate: false,
+    distances: [],
+    failed: true,
+    retryAfter: Number.isFinite(wait) ? Math.min(Math.max(wait, 0), 60) : 0,
+  };
+}
+
+async function ask(question, retry = false) {
   question = question.trim();
   if (!question || busy) return;
   busy = true;
@@ -490,11 +544,13 @@ async function ask(question) {
   }
   setChatting(true);
 
-  const userMsg = { role: "user", text: question, ts: Date.now() };
-  current.messages.push(userMsg);
-  current.ts = Date.now();
-  renderUser(userMsg);
-  persist();
+  if (!retry) {
+    const userMsg = { role: "user", text: question, ts: Date.now() };
+    current.messages.push(userMsg);
+    current.ts = Date.now();
+    renderUser(userMsg);
+    persist();
+  }
 
   setThinking(true);
   const thinking = showThinking();
@@ -518,23 +574,17 @@ async function ask(question) {
       res = await sendChat();
     }
     if (res.status === 429) {
-      data = {
-        answer: "You're sending messages too quickly. Please wait a moment and try again.",
-        citations: [],
-        escalate: false,
-        distances: [],
-      };
+      data = failedAnswer("You're sending messages too quickly. Please wait a moment and try again.", res);
+    } else if (res.status === 503) {
+      // The AI service is down or busy. The server's own message is shown, with Try again.
+      const body = await res.json().catch(() => ({}));
+      data = failedAnswer(typeof body.detail === "string" ? body.detail : BUSY_MESSAGE, res);
     } else {
       if (!res.ok) throw new Error(res.status);
       data = await res.json();
     }
   } catch (err) {
-    data = {
-      answer: "Sorry, something went wrong. Please try again.",
-      citations: [],
-      escalate: false,
-      distances: [],
-    };
+    data = failedAnswer("Sorry, something went wrong. Please try again.");
   }
 
   thinking.remove();
@@ -544,7 +594,7 @@ async function ask(question) {
   const botMsg = { role: "bot", question, data, ts: Date.now() };
   current.messages.push(botMsg);
   persist();
-  pulseOrb(data.escalate ? "alert" : "happy");
+  pulseOrb(data.escalate || data.failed ? "alert" : "happy");
 
   renderBot(botMsg, true, () => {
     busy = false;
