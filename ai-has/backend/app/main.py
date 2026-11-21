@@ -341,7 +341,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
             "distances": [],
             "proposed_action": None,
             "intent": None,
-            "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": []},
+            "guardrails": {"blocked": True, "reason": verdict["reason"], "redacted": [], "output": None},
         }
         # The raw text is never saved, only a placeholder with the blocked flag
         return _save_exchange(
@@ -356,7 +356,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
 
     # 3) What does the user want? Rules decide when they are sure. Only when they are not, one
     #    small model call decides (see intent.py).
-    guardrails = {"blocked": False, "reason": None, "redacted": found}
+    guardrails = {"blocked": False, "reason": None, "redacted": found, "output": None}
     #    A follow-up like "it still doesn't work" is classified, and searched, as a standalone question.
     turns = chatlog.recent_turns(req.conversation_id if saving else None, memory.max_turns())
     standalone = memory.standalone_question(clean, turns)
@@ -418,6 +418,7 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     result = answer(clean, history=memory.history_messages(turns), retrieval_query=standalone)
     result["proposed_action"] = None
     result["intent"] = shown_intent
+    guardrails["output"] = result.pop("output_check", None)  # what the output check did, if the model answered
     result["guardrails"] = guardrails
     escalated = bool(result["escalate"])
     return _save_exchange(
