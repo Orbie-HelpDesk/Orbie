@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     kb_max_bytes: int = 60_000  # largest article the knowledge base page accepts
     kb_max_articles: int = 200
     kb_edit_allow_remote: bool = False  # off: the page changes the knowledge base only on a local database
+    rate_limit_audit_per_min: int = 60  # every read of the audit log writes an audit_viewed row
     rate_limit_kb_per_min: int = 20  # saving, deleting and testing each cost an embedding call
     n8n_webhook_url: str = "http://localhost:5678/webhook"
     n8n_webhook_secret: str = ""

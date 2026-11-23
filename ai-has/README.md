@@ -64,7 +64,7 @@ Everyone logs in at `/login`. Three roles exist (`users.role`): `employee`, `age
 | Logged out | Open `/login` and `/health`. Everything else answers 401, and the pages `/` and `/admin` redirect to `/login` |
 | `employee` | The chat (`/`, `POST /chat`), `POST /tickets` and `POST /actions/confirm`. `/admin`, `GET /tickets`, `PATCH /tickets/{id}` and `GET /stats` answer 403 |
 | `agent`, `admin` | Everything an employee can, plus the dashboard (`/admin`), `GET /tickets`, `PATCH /tickets/{id}`, `GET /stats` and `GET /stats/analytics` |
-| `admin` only | Everything an agent can, plus the knowledge base page (`/admin/kb`) and its API (`/kb`, `/kb/{source}`, `/kb/test`). Agents and employees get 403 |
+| `admin` only | Everything an agent can, plus the knowledge base page (`/admin/kb`) and its API (`/kb`, `/kb/{source}`, `/kb/test`), and the audit log page (`/admin/audit`) and its API (`GET /audit`). Agents and employees get 403 |
 
 Tickets and proposed actions belong to the logged-in user. The chat and admin headers show the name, the role and a Log out button. Chat history in the browser is stored per user id.
 
@@ -116,7 +116,7 @@ Every `POST /chat` is saved, so the history survives a new browser and the dashb
 | Thumbs up or down | `messages.feedback` | -1, 0 or 1, set only by the owner of the conversation |
 | A blocked message | `messages` | Saved as the placeholder `[blocked message]` with `blocked = true`. The raw text is never stored |
 | Tickets | `tickets.conversation_id` | A ticket made from the chat is linked to its conversation |
-| Who did what | `audit_logs` | Logins, ticket status changes, confirmed actions, `kb_create`, `kb_update` and `kb_delete` (file name only), `conversation_read` (staff reading someone else's chat), `conversation_deleted`, `messages_purged`. Conversation ids and counts only, never text |
+| Who did what | `audit_logs` | Logins, ticket status changes, confirmed actions, `kb_create`, `kb_update` and `kb_delete` (file name only), `conversation_read` (staff reading someone else's chat), `conversation_deleted`, `messages_purged`, and `audit_viewed` (an admin read the audit log: the actor only, never the filters). Conversation ids and counts only, never text |
 
 **Not stored:** the raw text of blocked messages, the id of a proposed action (it works like a one-time key, so a reloaded chat shows the text of a proposal but not its Confirm card), the match distances (only the confidence), passwords, and anything the redaction replaced.
 
@@ -268,6 +268,32 @@ docker compose run --rm --service-ports \
 
 Ingest needs a valid `GEMINI_API_KEY` in `.env`, because it creates embeddings.
 
+## Audit log page (admins only)
+Admins can read the audit log at **`/admin/audit`**, linked from the dashboard header (only admins see the link). **Agents and employees get 403, and a logged-out visitor is sent to the login page.** The same applies to the API.
+
+`GET /audit` returns the rows of `audit_logs`, **newest first**, 50 per page:
+
+| Query | Meaning |
+|---|---|
+| `page` | 1 to 2000 (default 1). A value outside the range is a 422, not clamped |
+| `page_size` | 1 to **100** (default 50). 101 or more is a 422. The page itself always uses 50 |
+| `action` | An exact action name: lowercase letters and underscores only, at most 60. The page offers a dropdown of the actions the app writes |
+| `actor` | Free text, at most 80 characters, matched as "contains" and not case-sensitive. `%`, `_` and `\` typed here match themselves, not as wildcards |
+| `from`, `to` | Dates (`YYYY-MM-DD`), `to` included. They are counted in your time zone through `tz` (an IANA name such as `Asia/Singapore`, checked against `pg_timezone_names`, UTC if left out). `from` after `to` is a 422 |
+
+The answer is `{items, page, page_size, has_next}`. There is no total count: one row more than the page is read, to know whether an older page exists. Each item has only `id`, `time` (UTC with an offset, shown in your local time on the page), `actor`, `action` and `summary`.
+
+**What the page can show.** A row is never shown as stored, and the payload is never sent at all:
+- The `summary` is built from a whitelist per action, and every value in it is checked: an id must be a plain integer, a word (a role, a status, a decision, a priority, a reason) must be in a fixed list, and a file name must match the knowledge base name pattern. Anything else is left out. An action the page does not know shows "(no summary)". So an email, a password or message text that ever ended up in a payload cannot reach the page. The summaries look like `ticket 5: open to resolved`, `file vpn-troubleshooting.md`, `role agent` or `4 messages and 2 conversations older than 90 days`.
+- The `actor` is shown only if it is one of our own (`user:<id>`, `anonymous`, `cli`, `ai`). Anything else, such as an email in an old row, shows as "(hidden)". The page shows ids, not names or emails, and it does not look anyone up.
+- An action name that does not look like one of ours shows as "(other)".
+
+**Every read is recorded.** Each successful `GET /audit` writes an `audit_viewed` row with your id as the actor and an empty payload: **never the filters**. The row is written in the same transaction as the read, and if it cannot be written the read fails and returns nothing, so there is never an unlogged read. A refused request (401, 403 or 422) writes nothing. Each page click or Apply is its own read and its own row, so the log shows who looked and how often. Filter by the action `audit_viewed` to see them, or leave them out by choosing another action. Reads are limited to `RATE_LIMIT_AUDIT_PER_MIN` (default 60) so the log cannot be flooded by reading it.
+
+**Safe by construction.** Every value from a request (action, actor, dates, time zone, page, size) is a **bound parameter**. The SQL text is made only of fixed pieces, so nothing typed in a filter can change the query. The tests check that the SQL is identical whatever is typed, including quotes, `%`, `_`, backslashes, `; drop table` and very long values.
+
+The page has an action dropdown, an actor box, From and To dates, a table, Newer and Older buttons, dark and light mode, and a layout that works on a phone. Two indexes make it fast (see the list of schema changes below).
+
 ### Demo data for screenshots and the defense
 `python -m app.seed_demo` fills the **local** database with demo data, so the dashboard and the analytics page look populated.
 
@@ -325,6 +351,8 @@ Run it as one file, because the statements depend on each other in order (`pendi
 | This PR | Thumbs up or down | `alter table messages add column if not exists feedback smallint check (feedback in (-1, 0, 1));` |
 | This PR | Escalated flag | `alter table messages add column if not exists escalated boolean not null default false;` |
 | Intent routing (this PR) | What happened to a message. `messages.intent` now holds the taxonomy intent, and analytics read `coalesce(outcome, intent)` | `alter table messages add column if not exists outcome varchar(20);` |
+| Audit log page (this PR) | Newest first, and filtered by date | `create index if not exists audit_logs_created_idx on audit_logs (created_at desc, id desc);` |
+| Audit log page (this PR) | Filtered by action | `create index if not exists audit_logs_action_idx on audit_logs (action, created_at desc);` |
 | This PR | Blocked flag | `alter table messages add column if not exists blocked boolean not null default false;` |
 | This PR | Link from a proposed action to its conversation | `alter table pending_actions add column if not exists conversation_id integer references conversations (id) on delete set null;` |
 | This PR | Indexes for the history list and the analytics | `create index if not exists messages_conversation_idx on messages (conversation_id);` `create index if not exists messages_created_idx on messages (created_at);` `create index if not exists conversations_user_idx on conversations (user_id, created_at);` |
@@ -454,7 +482,7 @@ pytest
 # or in Docker
 docker compose run --rm -v "${PWD}/tests:/app/tests" backend sh -c "pip install -q pytest httpx && python -m pytest tests -q"
 ```
-Covered: `seed_demo` with a stubbed database (the local-only guard with no override, the typed `reset` confirmation, that users and the knowledge base are never deleted, the shape and honesty of the data, repeat runs, no row dated in the future), the knowledge base API and page with a temporary folder, a fake index and a fake embedder (roles, file names, path traversal, the size limit, create and update, failures that change nothing, delete, audit without text, the shared-database switch, the test box), the intent rules (English and Taglish, ambiguity, question forms), the classifier call with a fake model (valid, fenced, invalid, low confidence, failing, single attempt), each route of `/chat`, the follow-up rewrite and the memory, the output checks, the tool-calling path with fake replies, the evaluation's intent and output sections, the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
+Covered: the audit log API and page with a stubbed database (the roles, the page limits, the filters as bound parameters with injection strings, summaries that never show an email, a password or message text, hidden actors, and the `audit_viewed` row in the same transaction), `seed_demo` with a stubbed database (the local-only guard with no override, the typed `reset` confirmation, that users and the knowledge base are never deleted, the shape and honesty of the data, repeat runs, no row dated in the future), the knowledge base API and page with a temporary folder, a fake index and a fake embedder (roles, file names, path traversal, the size limit, create and update, failures that change nothing, delete, audit without text, the shared-database switch, the test box), the intent rules (English and Taglish, ambiguity, question forms), the classifier call with a fake model (valid, fenced, invalid, low confidence, failing, single attempt), each route of `/chat`, the follow-up rewrite and the memory, the output checks, the tool-calling path with fake replies, the evaluation's intent and output sections, the AI provider wrapper with a fake client that raises 404, 429, 503, timeouts and connection errors (retry counts and waits, no retry on 404 or 400, the fallback model, the time budget, the 503 body and `Retry-After`, no secret or response body in the log or the response), the how, what and why skip, the evaluation runner stopping and resuming, saving conversations and messages (redaction, blocked placeholder, confidence, ownership, failures, `PERSIST_CHATS=false`), the conversation, feedback and delete endpoints with owner checks and audit rows, the analytics numbers and who may read them, `purge_old` (guard, dry run, only text and titles), password hashing and demo passwords, signed tokens (tampered, expired, wrong secret), login and failure, the cookie flags, the lockout per email and per IP, each role (logged out, employee, agent, admin) against every protected endpoint and page, the JSON-only and Origin checks, the audit rows, the `set_password` helper (hidden prompt only, local database only), the n8n actions with a fake n8n (up, down, wrong secret, bad answers), proposals and `/actions/confirm` with an in-memory fake of the new tables (owner check, double confirm runs once, expiry, cancel, audit without personal data), tool calling with a fake model, `/health`, the models import, the local-db guard, ticket creation and its user fallback, the no-cache headers, the rate limits, the security headers and the safe 500.
 
 ### Lint and CI
 ```bash
@@ -464,9 +492,9 @@ ruff check backend tests
 GitHub Actions (`.github/workflows/ci.yml`) runs ruff, pytest and a `docker build` of `backend/` on every pull request and on pushes to `main`. It uses no secrets. The ruff version is pinned in `ruff.toml` and in the workflow, so change both together.
 
 ## Structure
-- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `kb.py` (the knowledge base page's logic), `seed_demo.py` (synthetic demo data, local database only), `ingest.py` (indexing, shared by the script and the page), `intent.py` (intent rules and classifier), `memory.py` (history and the follow-up rewrite), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
+- `backend/app/`: `main.py` (routes), `rag.py` (search and answer), `guardrails.py`, `llm.py` (provider calls, retries, fallback), `kb.py` (the knowledge base page's logic), `auditview.py` (what the audit log page may show, and its query), `seed_demo.py` (synthetic demo data, local database only), `ingest.py` (indexing, shared by the script and the page), `intent.py` (intent rules and classifier), `memory.py` (history and the follow-up rewrite), `tickets.py`, `chatlog.py` (saving and reading chats), `analytics.py`, `purge_old.py`, `auth.py` (current user, roles), `sessions.py` (signed token), `passwords.py`, `loginlimit.py`, `audit.py`, `actions.py` (n8n calls), `proposals.py` (propose, confirm, audit), `ingest.py`, `init_db.py`, `set_password.py`, `safety.py`, `eval_*.py`, `tune.py`
 - `backend/schema.sql`: idempotent database schema
-- `frontend/chat/`, `frontend/admin/`, `frontend/kb/` and `frontend/login/`: the pages (`chat/session.js` is shared by chat, admin and the knowledge base page)
+- `frontend/chat/`, `frontend/admin/`, `frontend/kb/`, `frontend/audit/` and `frontend/login/`: the pages (`chat/session.js` is shared by chat, admin and the knowledge base page)
 - `kb/`: IT knowledge base SOPs (markdown)
 - `docs/`: architecture, prompt taxonomy
 - `tests/`: pytest tests
