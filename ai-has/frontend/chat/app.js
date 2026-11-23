@@ -60,7 +60,6 @@ function persist() {
     localStorage.setItem(STORE_KEY, JSON.stringify(chats.filter((c) => !c.fromServer)));
   } catch (e) {}
   renderHistory();
-loadServerList();
 }
 
 // ---------- Helpers ----------
@@ -594,6 +593,8 @@ async function ask(question, retry = false) {
   const botMsg = { role: "bot", question, data, ts: Date.now() };
   current.messages.push(botMsg);
   persist();
+  // Only a saved answer has a conversation_id. A failed one (503) is not saved, so nothing to list.
+  if (data.conversation_id) loadServerList();
   pulseOrb(data.escalate || data.failed ? "alert" : "happy");
 
   renderBot(botMsg, true, () => {
@@ -614,12 +615,16 @@ function serverTime(value) {
 
 // When logged in, the saved conversations from the server are the history. If that fails, the
 // history kept in this browser is used instead.
+let listRequest = 0;
+
 async function loadServerList() {
   if (!window.aihasUser) return;
+  const mine = ++listRequest;
   try {
     const res = await fetch("/conversations");
     if (!res.ok) throw new Error(res.status);
     const list = await res.json();
+    if (mine !== listRequest) return; // a newer refresh is running, so this answer is out of date
     const open = current && current.serverId;
     chats = list.map((c) => ({
       id: "s" + c.id,
@@ -639,7 +644,7 @@ async function loadServerList() {
     }
     renderHistory();
   } catch (err) {
-    // fall back to the browser history already loaded
+    // Network error, 401 or 5xx: keep the list that is already shown, with no error message
   }
 }
 
@@ -648,6 +653,7 @@ function openHistory() {
   historyEl.classList.add("open");
   scrimEl.classList.add("open");
   renderHistory();
+  loadServerList();
 }
 
 function closeHistory() {
@@ -732,6 +738,7 @@ async function deleteChat(id) {
   chats = chats.filter((c) => c.id !== id);
   if (current && current.id === id) resetView();
   persist();
+  loadServerList();
 }
 
 function renderHistory() {
@@ -828,6 +835,7 @@ $("clearConfirm").onclick = async () => {
   chats = chats.filter((c) => failed.has(c.id));
   resetView();
   persist();
+  loadServerList();
 };
 
 $("theme").onclick = () => {
@@ -848,3 +856,4 @@ document.addEventListener("keydown", (e) => {
 });
 
 renderHistory();
+loadServerList();

@@ -85,6 +85,16 @@ Tickets and proposed actions belong to the logged-in user. The chat and admin he
 docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas -e DEMO_PASSWORD=choose-one backend python -m app.init_db
 ```
 
+**Sample users (local database only).** For the team demo, run the command above with `DEMO_PASSWORD='MyOrbie2026!'` and all three users share that password. Log in at http://localhost:8000/login.
+
+| Email | Role | What it can do | Password |
+|---|---|---|---|
+| `employee@example.com` | employee | Chat, create tickets, see its own history | `MyOrbie2026!` |
+| `agent@example.com` | agent | Everything an employee can, plus the admin page, tickets and analytics | `MyOrbie2026!` |
+| `admin@example.com` | admin | Everything an agent can, plus the knowledge base page | `MyOrbie2026!` |
+
+This password is for the local demo database only. Never set it on Supabase or any shared or real environment, and use `set_password` there instead. If a user already has a different password, `init_db` leaves it alone.
+
 **Real accounts.** Existing users, for example on Supabase, have no password until one is set:
 ```bash
 docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.set_password someone@example.com
@@ -114,7 +124,7 @@ Every `POST /chat` is saved, so the history survives a new browser and the dashb
 
 **If saving fails** (for example the new tables are not on the database yet) the chat still answers, and `conversation_id` in the response is null. Set `PERSIST_CHATS=false` to switch saving off completely. The in-process load test does this itself. For `--mode full`, start the server with `PERSIST_CHATS=false` or every request becomes a conversation. The evaluation runner calls the answer code directly, so it never logs in and never saves anything.
 
-**History in the chat page.** When logged in, the history panel shows the saved conversations from the server. If the server cannot be reached it falls back to the history kept in this browser, which is stored per user. Chats from the old browser-only history are not copied to the server. History loaded from the server has no match gauge, because the distances are not stored. The delete buttons delete the conversation on the server (its tickets stay, no longer linked to it).
+**History in the chat page.** When logged in, the history panel shows the saved conversations from the server. The list is loaded when the page opens, and refreshed when the panel is opened, after every saved answer and after a delete. A failed answer (for example a 503) is not saved, so it is not listed. If the server cannot be reached (network error, 401 or 5xx) the list that is already shown stays as it is, with no error message, and the history kept in this browser (stored per user) is used. Chats from the old browser-only history are not copied to the server. History loaded from the server has no match gauge, because the distances are not stored. The delete buttons delete the conversation on the server (its tickets stay, no longer linked to it).
 
 **Retention.** Nothing is removed automatically. To remove old text:
 ```bash
