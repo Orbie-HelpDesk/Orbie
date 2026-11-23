@@ -85,6 +85,16 @@ Tickets and proposed actions belong to the logged-in user. The chat and admin he
 docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas -e DEMO_PASSWORD=choose-one backend python -m app.init_db
 ```
 
+**Sample users (local database only).** For the team demo, run the command above with `DEMO_PASSWORD='MyOrbie2026!'` and all three users share that password. Log in at http://localhost:8000/login.
+
+| Email | Role | What it can do | Password |
+|---|---|---|---|
+| `employee@example.com` | employee | Chat, create tickets, see its own history | `MyOrbie2026!` |
+| `agent@example.com` | agent | Everything an employee can, plus the admin page, tickets and analytics | `MyOrbie2026!` |
+| `admin@example.com` | admin | Everything an agent can, plus the knowledge base page | `MyOrbie2026!` |
+
+This password is for the local demo database only. Never set it on Supabase or any shared or real environment, and use `set_password` there instead. If a user already has a different password, `init_db` leaves it alone.
+
 **Real accounts.** Existing users, for example on Supabase, have no password until one is set:
 ```bash
 docker compose run --rm -e DATABASE_URL=postgresql+psycopg2://aihas:aihas-local@db:5432/aihas backend python -m app.set_password someone@example.com
