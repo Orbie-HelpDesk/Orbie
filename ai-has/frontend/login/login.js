@@ -10,6 +10,23 @@ const next = safeNext(new URLSearchParams(location.search).get("next"));
 const form = $("loginForm");
 const errorEl = $("error");
 const submitBtn = $("submit");
+const togglePasswordBtn = $("togglePassword");
+const passwordInput = $("password");
+
+if (togglePasswordBtn && passwordInput) {
+  togglePasswordBtn.addEventListener("click", () => {
+    const isPassword = passwordInput.type === "password";
+    passwordInput.type = isPassword ? "text" : "password";
+    togglePasswordBtn.setAttribute("aria-label", isPassword ? "Hide password" : "Show password");
+    togglePasswordBtn.setAttribute("title", isPassword ? "Hide password" : "Show password");
+    const eyeShow = togglePasswordBtn.querySelector(".eye-show");
+    const eyeHide = togglePasswordBtn.querySelector(".eye-hide");
+    if (eyeShow && eyeHide) {
+      eyeShow.style.display = isPassword ? "none" : "block";
+      eyeHide.style.display = isPassword ? "block" : "none";
+    }
+  });
+}
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
