@@ -92,6 +92,15 @@ create table if not exists pending_actions (
     decided_at timestamp
 );
 
+-- Articles the admin page edits. The search index (kb_documents, kb_chunks) is built from these.
+create table if not exists kb_articles (
+    slug text primary key,  -- file name, e.g. password-reset.md
+    title text not null,
+    body text not null,  -- the markdown
+    updated_at timestamptz not null default now()
+);
+alter table kb_articles enable row level security;
+
 -- Added for chat persistence and feedback. Additive: nothing existing is changed or removed.
 alter table conversations add column if not exists title varchar(120);  -- from the first redacted question
 alter table messages add column if not exists feedback smallint check (feedback in (-1, 0, 1));  -- thumbs: -1 down, 0 none, 1 up

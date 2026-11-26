@@ -1,32 +1,25 @@
 """Knowledge base management: list, read, save (and re-index), delete, and test retrieval.
 
-Used by the admin-only routes in main.py. The articles are markdown files in the KB folder
-(settings.kb_dir, /kb in Docker). The index is kb_documents and kb_chunks, filled by the same
-functions as `python -m app.ingest` (ingest.prepare_article and ingest.store_article).
+Used by the admin-only routes in main.py. The articles live in the kb_articles table
+(slug, title, body), so the deployed site can change them. The search index is kb_documents and
+kb_chunks, filled by the same functions as `python -m app.ingest` (ingest.prepare_article and
+ingest.store_article).
 
 Safety rules
-- A name is lowercase letters, digits and dashes plus ".md" (so also no two names that differ only by
-  case on a case-insensitive disk), and not a Windows reserved name. The resolved path must sit
-  directly inside the KB folder, and a symlink is never followed.
+- A name is lowercase letters, digits and dashes plus ".md", and not a Windows reserved name.
 - An article is at most KB_MAX_BYTES, starts with a "# Title" line, and there are at most KB_MAX_ARTICLES.
-- Changing data is refused unless the database is local (db or localhost) or KB_EDIT_ALLOW_REMOTE is
-  true, because the files live in one checkout and the index may be shared.
-- A save embeds first (a failure changes nothing), writes a temp file, commits the database change
-  together with its audit row, and only then moves the file into place.
+- A save embeds first (a failure changes nothing), then writes the article, its index rows and its
+  audit row in one database transaction.
 - The audit row has the file name only, never the article text.
 """
 import logging
-import os
 import re
-import secrets
-from pathlib import Path
 
 from sqlalchemy import text
 
 from . import audit, ingest, rag
 from .config import settings
 from .db import engine
-from .safety import is_local_db
 from .timeutil import as_utc
 
 logger = logging.getLogger(__name__)
@@ -47,7 +40,7 @@ class KbError(Exception):
         self.message = message
 
 
-# ---------- names and paths ----------
+# ---------- names ----------
 def check_name(source: str) -> str:
     """The file name if it is allowed, else a 400. Only lowercase letters, digits, dashes and .md."""
     if not isinstance(source, str) or not NAME_RE.match(source) or source[:-3] in WINDOWS_RESERVED:
@@ -58,34 +51,12 @@ def check_name(source: str) -> str:
     return source
 
 
-def folder() -> Path:
-    path = ingest.kb_dir()
-    if not path.is_dir():
-        raise KbError(503, "The knowledge base folder is not available on the server.")
-    return path.resolve()
+def read_only_reason() -> str | None:
+    """Articles are stored in the database, so changes are always allowed here.
 
-
-def path_for(source: str) -> Path:
-    """The file for this article. It must be directly inside the KB folder and not a symlink."""
-    check_name(source)
-    base = folder()
-    path = (base / source).resolve()
-    if path.parent != base:
-        raise KbError(400, "That file name is not allowed.")
-    if (base / source).is_symlink():
-        raise KbError(400, "That file name is not allowed.")
-    return path
-
-
-def require_editable() -> None:
-    """Changing the knowledge base needs a local database, unless KB_EDIT_ALLOW_REMOTE is switched on."""
-    if can_edit():
-        return
-    raise KbError(
-        403,
-        "Editing the knowledge base is switched off for this database. "
-        "Only the team lead should enable KB_EDIT_ALLOW_REMOTE on a shared database.",
-    )
+    The routes still require an admin, rate-limit the calls and write an audit row.
+    """
+    return None
 
 
 def normalize_content(content: str) -> str:
@@ -103,91 +74,91 @@ def normalize_content(content: str) -> str:
     return cleaned if cleaned.endswith("\n") else cleaned + "\n"
 
 
-def _article_files() -> list[Path]:
-    base = folder()
-    return sorted(p for p in base.glob("*.md") if NAME_RE.match(p.name) and not p.is_symlink())
-
-
-def can_edit() -> bool:
-    return settings.kb_edit_allow_remote or is_local_db(settings.database_url)
-
-
 def info() -> dict:
-    """What the page needs to know: the limits, and whether changes are allowed on this database."""
+    """What the page needs to know: the limits, and whether changes are allowed."""
+    reason = read_only_reason()
     return {
         "max_bytes": settings.kb_max_bytes,
         "max_articles": settings.kb_max_articles,
         "max_distance": rag.MAX_DISTANCE,
-        "editable": can_edit(),
+        "editable": reason is None,
+        "read_only_reason": reason,
         "name_pattern": NAME_RE.pattern,
     }
 
 
 # ---------- reading ----------
 def list_articles() -> list[dict]:
-    """Every article on disk and in the index, with a status: indexed, not_indexed or file_missing."""
+    """Every stored article and every indexed one, with a status: indexed, not_indexed or file_missing."""
     with engine.connect() as conn:
-        rows = conn.execute(text("select source_path, title, chunk_count, indexed_at from kb_documents")).mappings().all()
-    indexed = {r["source_path"]: r for r in rows}
+        docs = conn.execute(
+            text("select source_path, title, chunk_count, indexed_at from kb_documents")
+        ).mappings().all()
+        arts = conn.execute(
+            text("select slug, title, octet_length(body) as size from kb_articles")
+        ).mappings().all()
+    indexed = {r["source_path"]: r for r in docs}
+    stored = {r["slug"]: r for r in arts}
     items = []
-    on_disk = set()
-    for path in _article_files():
-        on_disk.add(path.name)
-        row = indexed.get(path.name)
-        first = path.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+    for source in sorted(set(indexed) | set(stored)):
+        doc = indexed.get(source)
+        art = stored.get(source)
         items.append({
-            "source": path.name,
-            "title": row["title"] if row else ingest.title_of(first[0] if first else "", path.stem),
-            "chunks": row["chunk_count"] if row else 0,
-            "indexed_at": as_utc(row["indexed_at"]) if row else None,
-            "size": path.stat().st_size,
-            "status": "indexed" if row else "not_indexed",
+            "source": source,
+            "title": (doc or art)["title"],
+            "chunks": doc["chunk_count"] if doc else 0,
+            "indexed_at": as_utc(doc["indexed_at"]) if doc else None,
+            "size": art["size"] if art else None,
+            # "file_missing" is the name the page already knows: indexed, but no stored article
+            "status": "file_missing" if art is None else ("indexed" if doc else "not_indexed"),
         })
-    for source, row in indexed.items():
-        if source not in on_disk:
-            items.append({
-                "source": source, "title": row["title"], "chunks": row["chunk_count"],
-                "indexed_at": as_utc(row["indexed_at"]), "size": None, "status": "file_missing",
-            })
-    return sorted(items, key=lambda i: i["source"])
+    return items
 
 
 def read_article(source: str) -> dict:
-    path = path_for(source)
-    if not path.is_file():
+    check_name(source)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("select title, body from kb_articles where slug = :s"), {"s": source}
+        ).mappings().first()
+    if row is None:
         raise KbError(404, "Article not found.")
-    content = path.read_text(encoding="utf-8")
-    return {"source": source, "content": content, "size": len(content.encode("utf-8")), "title": ingest.title_of(content, path.stem)}
+    body = row["body"]
+    return {"source": source, "content": body, "size": len(body.encode("utf-8")), "title": row["title"]}
 
 
 # ---------- changing ----------
 def save_article(source: str, content: str, actor: str) -> dict:
     """Creates or updates an article and re-indexes only it. Raises KbError, or the provider error if embedding fails."""
-    path = path_for(source)
-    require_editable()
+    check_name(source)
     cleaned = normalize_content(content)
-    existed = path.is_file()
-    if not existed and len([p for p in _article_files() if p.name != source]) >= settings.kb_max_articles:
+
+    with engine.connect() as conn:
+        existed = conn.execute(
+            text(
+                "select exists (select 1 from kb_articles where slug = :s) "
+                "or exists (select 1 from kb_documents where source_path = :s)"
+            ),
+            {"s": source},
+        ).scalar()
+        others = conn.execute(
+            text("select count(*) from kb_articles where slug <> :s"), {"s": source}
+        ).scalar()
+    if not existed and others >= settings.kb_max_articles:
         raise KbError(409, f"The knowledge base already has {settings.kb_max_articles} articles.")
 
     prepared = ingest.prepare_article(source, cleaned)  # embeds first: if this fails nothing has changed
 
-    temp = path.with_name(f".{source}.{secrets.token_hex(4)}.tmp")
-    with open(temp, "x", encoding="utf-8", newline="\n") as handle:
-        handle.write(cleaned)
-    try:
-        with engine.begin() as conn:
-            ingest.store_article(conn, prepared)
-            audit.record(actor, "kb_update" if existed else "kb_create", {"file": source}, conn=conn)
-    except Exception:
-        temp.unlink(missing_ok=True)  # the old article is untouched
-        raise
-    try:
-        os.replace(temp, path)
-    except OSError:
-        temp.unlink(missing_ok=True)
-        logger.exception("The index for %s was saved but the file could not be written", source)
-        raise KbError(500, "The article was indexed but its file could not be written. Save it again.") from None
+    with engine.begin() as conn:  # the article, its index rows and the audit row succeed or fail together
+        ingest.store_article(conn, prepared)
+        conn.execute(
+            text(
+                "insert into kb_articles (slug, title, body, updated_at) values (:s, :t, :b, now()) "
+                "on conflict (slug) do update set title = excluded.title, body = excluded.body, updated_at = now()"
+            ),
+            {"s": source, "t": prepared.title, "b": cleaned},
+        )
+        audit.record(actor, "kb_update" if existed else "kb_create", {"file": source}, conn=conn)
     return {
         "source": source, "title": prepared.title, "chunks": len(prepared.chunks),
         "size": len(cleaned.encode("utf-8")), "created": not existed,
@@ -195,20 +166,14 @@ def save_article(source: str, content: str, actor: str) -> dict:
 
 
 def delete_article(source: str, actor: str) -> dict:
-    """Removes the article's index rows and its file. 404 if neither exists."""
-    path = path_for(source)
-    require_editable()
-    has_file = path.is_file()
+    """Removes the stored article and its index rows. 404 if neither exists."""
+    check_name(source)
     with engine.begin() as conn:
-        removed = ingest.remove_article(conn, source)
-        if not has_file and not removed:
+        removed_article = conn.execute(text("delete from kb_articles where slug = :s"), {"s": source}).rowcount
+        removed_index = ingest.remove_article(conn, source)
+        if not removed_article and not removed_index:
             raise KbError(404, "Article not found.")
         audit.record(actor, "kb_delete", {"file": source}, conn=conn)
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        logger.exception("The index for %s was removed but its file could not be deleted", source)
-        raise KbError(500, "The article was removed from the index but its file could not be deleted.") from None
     return {"source": source, "deleted": True}
 
 
