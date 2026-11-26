@@ -77,15 +77,30 @@ def path_for(source: str) -> Path:
     return path
 
 
+BUNDLED_MESSAGE = (
+    "This site shows a copy of the articles that came with the deployment, so the page is read only. "
+    "Change articles in the project's kb folder, then deploy again."
+)
+REMOTE_MESSAGE = (
+    "Editing the knowledge base is switched off for this database, so the page is read only. "
+    "Only the team lead should enable KB_EDIT_ALLOW_REMOTE on a shared database."
+)
+
+
+def read_only_reason() -> str | None:
+    """Why changes are refused, or None when they are allowed."""
+    if ingest.is_bundled_kb():  # first, because KB_EDIT_ALLOW_REMOTE cannot make this copy writable
+        return BUNDLED_MESSAGE
+    if settings.kb_edit_allow_remote or is_local_db(settings.database_url):
+        return None
+    return REMOTE_MESSAGE
+
+
 def require_editable() -> None:
-    """Changing the knowledge base needs a local database, unless KB_EDIT_ALLOW_REMOTE is switched on."""
-    if can_edit():
-        return
-    raise KbError(
-        403,
-        "Editing the knowledge base is switched off for this database. "
-        "Only the team lead should enable KB_EDIT_ALLOW_REMOTE on a shared database.",
-    )
+    """Changes need the real KB folder, and a local database unless KB_EDIT_ALLOW_REMOTE is switched on."""
+    reason = read_only_reason()
+    if reason:
+        raise KbError(403, reason)
 
 
 def normalize_content(content: str) -> str:
@@ -108,17 +123,15 @@ def _article_files() -> list[Path]:
     return sorted(p for p in base.glob("*.md") if NAME_RE.match(p.name) and not p.is_symlink())
 
 
-def can_edit() -> bool:
-    return settings.kb_edit_allow_remote or is_local_db(settings.database_url)
-
-
 def info() -> dict:
-    """What the page needs to know: the limits, and whether changes are allowed on this database."""
+    """What the page needs to know: the limits, and whether changes are allowed."""
+    reason = read_only_reason()
     return {
         "max_bytes": settings.kb_max_bytes,
         "max_articles": settings.kb_max_articles,
         "max_distance": rag.MAX_DISTANCE,
-        "editable": can_edit(),
+        "editable": reason is None,
+        "read_only_reason": reason,
         "name_pattern": NAME_RE.pattern,
     }
 

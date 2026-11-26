@@ -216,6 +216,8 @@ On the page: a list of articles with status badges, a markdown editor with a byt
 
 **`KB_EDIT_ALLOW_REMOTE` (default `false`).** Saving and deleting change the index tables (`kb_documents` and `kb_chunks`) and the files, so they are refused with a 403 unless the database host is `db` or `localhost`, or `KB_EDIT_ALLOW_REMOTE=true`. Listing, reading and the test box always work. **Only the team lead should switch it on, and only for a shared database such as Supabase.** The reason is that the `kb/` files live in each developer's own checkout while the index is shared: an edit through the page would change the shared index but not anyone else's files, and the next `python -m app.ingest` from another checkout would put the old text back. With the switch off the page shows a read-only banner.
 
+**On Vercel the page is read only.** The deployment has no `/kb` folder, so when `KB_DIR` is left at its default the app reads the copy in `backend/kb/`. Saving and deleting are always refused for that copy, even with `KB_EDIT_ALLOW_REMOTE=true`. The copy does not update itself: after changing an article in `kb/`, copy it to `backend/kb/`, commit, and deploy again.
+
 **Rules the server enforces**
 - **File names** are lowercase letters, digits and dashes, ending in `.md` (at most 84 characters), and not a Windows reserved name such as `con` or `nul`. Lowercase only, so two names can never differ just by case on a case-insensitive disk.
 - **Paths:** the resolved path must sit directly inside the KB folder (`KB_DIR`, default `/kb`), a symlink is never followed, and `../` or a slash in a name is refused. Nothing is ever written outside `kb/`.

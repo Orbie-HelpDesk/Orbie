@@ -39,7 +39,7 @@ function setBusy(on) {
   busy = on;
   $("saveBtn").disabled = on || !info.editable;
   $("deleteBtn").disabled = on || !info.editable || (current && current.isNew);
-  $("newBtn").disabled = on;
+  $("newBtn").disabled = on || !info.editable;
 }
 
 // ---------- The list ----------
@@ -113,6 +113,7 @@ function fill(source, content, isNew, status) {
   $("fileName").value = source;
   $("fileName").readOnly = !isNew;
   $("content").value = content;
+  $("content").readOnly = !info.editable;
   $("editorTitle").textContent = isNew ? "New article" : source;
   say($("message"), "");
   say($("testMessage"), "");
@@ -338,10 +339,7 @@ window.addEventListener("beforeunload", (e) => {
     // keep the defaults: the server checks every limit anyway
   }
   if (!info.editable) {
-    say(
-      $("banner"),
-      "Changes are switched off for this database, so the page is read only. Only the team lead should enable KB_EDIT_ALLOW_REMOTE on a shared database."
-    );
+    say($("banner"), info.read_only_reason || "This page is read only.");
     $("banner").hidden = false;
     $("newBtn").disabled = true;
   }
