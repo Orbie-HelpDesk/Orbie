@@ -1,0 +1,62 @@
+/* Loaded after the chat styles.css and the dashboard admin.css, so colours, fonts, panels, tables,
+   buttons and the theme are shared. */
+
+.au-filters {
+  display: grid;
+  grid-template-columns: 1.1fr 1.4fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+.au-field { display: grid; gap: 6px; min-width: 0; }
+.au-field label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.au-field select, .au-field input {
+  width: 100%;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(127, 127, 160, 0.07);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.au-field select:focus, .au-field input:focus { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.2); }
+.au-field input[type="date"] { color-scheme: light dark; }
+.au-field select option { color: #16161d; }
+.au-buttons { display: flex; gap: 8px; }
+.au-buttons .act { height: 42px; padding: 0 16px; }
+
+.au-message { min-height: 20px; margin: 12px 0 8px; font-size: 13.5px; color: var(--muted); }
+.au-message.error { color: var(--red); }
+
+.au-table td { vertical-align: top; }
+.au-table td.when { white-space: nowrap; color: var(--muted); }
+.au-table td.actor { font-weight: 600; white-space: nowrap; }
+.au-table td.hidden-actor { color: var(--muted); font-weight: 400; font-style: italic; }
+.au-table td.detail { overflow-wrap: anywhere; min-width: 160px; }
+.au-table td.detail.none { color: var(--muted); }
+
+/* Action tags, grouped by what they are about */
+.tag.au-auth { background: rgba(59, 130, 246, 0.16); color: #3b82f6; }
+.tag.au-failed { background: rgba(229, 72, 77, 0.16); color: var(--red); }
+.tag.au-ticket { background: rgba(255, 122, 89, 0.16); color: var(--a2); }
+.tag.au-action { background: rgba(108, 92, 231, 0.16); color: var(--a1); }
+.tag.au-chat { background: rgba(31, 200, 176, 0.16); color: #1fa896; }
+.tag.au-kb { background: rgba(47, 184, 111, 0.16); color: var(--green); }
+.tag.au-other { background: rgba(127, 127, 160, 0.18); color: var(--muted); }
+.au-table .tag { text-transform: none; }
+
+.au-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; font-size: 13.5px; color: var(--muted); }
+.au-pager .act:disabled { opacity: 0.45; cursor: default; transform: none; }
+.au-foot { margin-top: 14px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+
+@media (max-width: 900px) {
+  .au-filters { grid-template-columns: 1fr 1fr; }
+  .au-buttons { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .au-filters { grid-template-columns: 1fr; }
+  .au-table td.detail { min-width: 140px; }
+}

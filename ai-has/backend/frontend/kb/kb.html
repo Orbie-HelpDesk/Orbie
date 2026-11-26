@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge base · Orbie</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <script>
+    try {
+      var t = localStorage.getItem("theme");
+      if (!t) t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/admin-assets/admin.css">
+  <link rel="stylesheet" href="/kb-assets/kb.css">
+</head>
+<body class="chatting">
+  <!-- Living background, same as the chat -->
+  <div class="bg" aria-hidden="true">
+    <i class="blob b1"></i>
+    <i class="blob b2"></i>
+    <i class="blob b3"></i>
+  </div>
+  <div class="cursor-glow" id="glow" aria-hidden="true"></div>
+
+  <div class="app admin">
+    <header class="top">
+      <div class="brand">
+        <div class="brand-orb">
+          <div class="orb" id="headOrb" style="--s:40px"><div class="eyes"><i class="eye"><b class="pupil"></b></i><i class="eye"><b class="pupil"></b></i></div></div>
+        </div>
+        <div class="title">
+          <strong>Orbie</strong>
+          <small>Knowledge base</small>
+        </div>
+      </div>
+
+      <div class="actions">
+        <a class="ib" href="/admin" title="Back to the dashboard" aria-label="Back to the dashboard">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        </a>
+        <button class="ib" id="refresh" type="button" title="Refresh the list" aria-label="Refresh the list">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
+        <button class="ib" id="theme" type="button" title="Toggle theme" aria-label="Toggle theme">
+          <svg class="icon moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="icon sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <div class="user" id="userSlot"></div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="intro">
+        <h1>Knowledge <span>base</span></h1>
+        <p>The articles Orbie answers from. Saving an article re-indexes only that article.</p>
+      </section>
+
+      <p class="kb-banner" id="banner" role="status" hidden></p>
+
+      <div class="kb-grid">
+        <!-- Article list -->
+        <section class="panel kb-list-panel">
+          <div class="panel-head">
+            <h2>Articles <span class="kb-count" id="count"></span></h2>
+            <button class="act primary" id="newBtn" type="button">New article</button>
+          </div>
+          <div class="kb-list" id="list" role="list"></div>
+        </section>
+
+        <!-- Editor -->
+        <section class="panel kb-editor-panel">
+          <div class="panel-head">
+            <h2 id="editorTitle">Pick an article or start a new one</h2>
+            <span class="tag" id="statusTag" hidden></span>
+          </div>
+
+          <div id="editor" hidden>
+            <label class="kb-label" for="fileName">File name</label>
+            <input class="kb-input" id="fileName" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="vpn-troubleshooting.md" maxlength="84">
+            <p class="kb-hint">Lowercase letters, digits and dashes, ending in .md</p>
+
+            <label class="kb-label" for="content">Markdown</label>
+            <textarea class="kb-text" id="content" spellcheck="true" rows="18"
+                      placeholder="# Title&#10;&#10;The first line is the title."></textarea>
+            <div class="kb-meter"><span id="bytes">0 bytes</span><span id="dirty" hidden>Unsaved changes</span></div>
+
+            <p class="kb-message" id="message" role="status"></p>
+
+            <div class="kb-actions">
+              <button class="ticket-btn kb-save" id="saveBtn" type="button">Save and re-index</button>
+              <button class="kb-delete" id="deleteBtn" type="button">Delete</button>
+            </div>
+
+            <div class="kb-confirm" id="confirmDelete" hidden>
+              <p>Delete <b id="confirmName"></b>? This removes the file and its index. It cannot be undone.</p>
+              <div class="kb-actions">
+                <button class="kb-delete solid" id="confirmYes" type="button">Yes, delete it</button>
+                <button class="act" id="confirmNo" type="button">Cancel</button>
+              </div>
+            </div>
+
+            <div class="kb-confirm" id="confirmDiscard" hidden>
+              <p>You have unsaved changes. Discard them and open the other article?</p>
+              <div class="kb-actions">
+                <button class="kb-delete solid" id="discardYes" type="button">Discard and open</button>
+                <button class="act" id="discardNo" type="button">Keep editing</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Test retrieval -->
+        <section class="panel kb-test-panel">
+          <div class="panel-head">
+            <h2>Test retrieval</h2>
+          </div>
+          <p class="kb-hint">Runs one question through the same search the chat uses and shows what comes back. No answer is written. It costs one embedding call.</p>
+          <form class="kb-test-form" id="testForm">
+            <input class="kb-input" id="question" type="text" maxlength="500" autocomplete="off"
+                   placeholder="For example: my vpn will not connect from home">
+            <button class="act primary" id="testBtn" type="submit">Run</button>
+          </form>
+          <p class="kb-message" id="testMessage" role="status"></p>
+          <div id="results"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/field.js"></script>
+  <script src="/static/session.js" data-then="/kb-assets/kb.js"></script>
+</body>
+</html>
