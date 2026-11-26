@@ -1,6 +1,14 @@
 const $ = (id) => document.getElementById(id);
 let filter = "";
 
+// ---------- Header subtitle: the same page serves agents and admins ----------
+(function setSubtitle() {
+  const sub = $("dashSub");
+  if (!sub) return;
+  const role = window.aihasUser && window.aihasUser.role;
+  sub.textContent = role === "admin" ? "Admin dashboard" : role === "agent" ? "Agent dashboard" : "Dashboard";
+})();
+
 // ---------- Connection status (same pill as the chat) ----------
 fetch("/health")
   .then((res) => res.json())
@@ -66,10 +74,30 @@ function actionButton(label, onClick, primary) {
   return b;
 }
 
+// A failed request becomes an Error that says which request failed, the status and the server's
+// message, for example "Stats failed (403: Admins only)". Shown on the page and in the console.
+async function apiFail(res, what) {
+  let detail = "";
+  try {
+    const body = await res.json();
+    if (typeof body.detail === "string") detail = body.detail;
+  } catch (e) {}
+  return new Error(what + " failed (" + res.status + (detail ? ": " + detail : "") + ")");
+}
+
+function showNote(id, message) {
+  const note = $(id);
+  if (!note) return;
+  note.textContent = message || "";
+  note.hidden = !message;
+}
+
 // ---------- Data ----------
 async function loadStats() {
   const res = await fetch("/stats?" + zoneQuery());
+  if (!res.ok) throw await apiFail(res, "Stats");
   const s = await res.json();
+  showNote("s-note", "");
 
   $("k-total").textContent = s.total;
   $("k-open").textContent = s.open;
@@ -97,6 +125,11 @@ async function loadStats() {
   });
 }
 
+function statsFailed(err) {
+  console.error(err);
+  showNote("s-note", "Could not load the ticket numbers. " + (err && err.message ? err.message : ""));
+}
+
 async function setStatus(id, status) {
   await fetch("/tickets/" + id, {
     method: "PATCH",
@@ -109,6 +142,7 @@ async function setStatus(id, status) {
 async function loadTickets() {
   const url = filter ? "/tickets?status=" + filter : "/tickets";
   const res = await fetch(url);
+  if (!res.ok) throw await apiFail(res, "Tickets");
   const list = await res.json();
   const body = $("rows");
   body.innerHTML = "";
@@ -234,10 +268,9 @@ function drawTop(id, rows, labelOf, emptyText) {
 }
 
 async function loadAnalytics() {
-  const note = $("a-note");
-  note.hidden = true;
+  showNote("a-note", "");
   const res = await fetch("/stats/analytics?days=" + days + "&" + zoneQuery());
-  if (!res.ok) throw new Error(res.status);
+  if (!res.ok) throw await apiFail(res, "Analytics");
   const a = await res.json();
 
   $("a-questions").textContent = a.totals.questions;
@@ -258,18 +291,20 @@ async function loadAnalytics() {
     "but redaction is automatic and may miss some.";
 }
 
-function analyticsFailed() {
-  const note = $("a-note");
-  note.textContent = "Could not load the analytics.";
-  note.hidden = false;
+function analyticsFailed(err) {
+  console.error(err);
+  showNote("a-note", "Could not load the analytics. " + (err && err.message ? err.message : ""));
 }
 
 function refresh() {
   loadAnalytics().catch(analyticsFailed);
-  loadStats().catch(() => {});
-  loadTickets().catch(() => {
+  loadStats().catch(statsFailed);
+  loadTickets().catch((err) => {
+    console.error(err);
     $("rows").innerHTML =
-      '<tr><td colspan="8" class="empty">Could not load tickets.</td></tr>';
+      '<tr><td colspan="8" class="empty">Could not load tickets. ' +
+      (err && err.message ? err.message.replace(/[<>&]/g, "") : "") +
+      "</td></tr>";
   });
 }
 
@@ -280,7 +315,7 @@ $("filters").querySelectorAll("button").forEach((b) => {
     $("filters")
       .querySelectorAll("button")
       .forEach((x) => x.classList.toggle("on", x === b));
-    loadTickets();
+    loadTickets().catch(() => {});
   };
 });
 
