@@ -135,6 +135,11 @@ app.mount("/audit-assets", NoCacheStaticFiles(directory=AUDIT_PAGE_DIR, check_di
 app.mount("/login-assets", NoCacheStaticFiles(directory=LOGIN_DIR, check_dir=False), name="login-assets")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(CHAT_DIR / "favicon.svg", media_type="image/svg+xml")
+
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = Field(default=None, ge=1)  # continue this conversation, or start one

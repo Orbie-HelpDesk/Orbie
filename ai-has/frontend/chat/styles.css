@@ -199,10 +199,10 @@ body:not(.chatting) .title { opacity: 0.0; }
 .orb::after {
   content: "";
   position: absolute;
-  inset: -7px;
+  inset: -6px;
   border-radius: 50%;
-  border: 2px solid transparent;
-  border-top-color: var(--a3);
+  border: 2.5px solid rgba(127, 127, 160, 0.22);
+  border-top-color: var(--a1);
   border-right-color: var(--a2);
   opacity: 0;
   transition: opacity 0.3s;
@@ -377,7 +377,7 @@ body:not(.chatting) .title { opacity: 0.0; }
   flex-direction: column;
   gap: 20px;
   overflow-y: auto;
-  padding: 18px 4px;
+  padding: 18px 8px;
   scroll-behavior: smooth;
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
   mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
@@ -390,7 +390,7 @@ body.chatting .hero { display: none; }
 
 .msg { display: flex; align-items: flex-end; gap: 10px; animation: pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .msg.user { justify-content: flex-end; }
-.msg .orb { animation: none; margin-bottom: 20px; }
+.msg .orb { animation: none; margin: 0 2px 20px 4px; }
 
 @keyframes pop { from { opacity: 0; transform: translateY(12px) scale(0.97); } }
 
