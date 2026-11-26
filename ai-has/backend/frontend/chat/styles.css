@@ -196,18 +196,33 @@ body:not(.chatting) .title { opacity: 0.0; }
   animation: float 4s ease-in-out infinite;
 }
 
+/* Rainbow ring that spins while Orbie is thinking */
 .orb::after {
   content: "";
   position: absolute;
-  inset: -6px;
+  inset: -7px;
   border-radius: 50%;
-  border: 2.5px solid rgba(127, 127, 160, 0.22);
-  border-top-color: var(--a1);
-  border-right-color: var(--a2);
+  background: conic-gradient(from 0deg, #6c5ce7, #3b82f6, #1fc8b0, #fbbf24, #ff7a59, #d946a8, #6c5ce7);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 3px));
   opacity: 0;
   transition: opacity 0.3s;
 }
-.orb.think::after { opacity: 1; animation: spin 0.9s linear infinite; }
+.orb.think::after { opacity: 1; animation: spin 1.1s linear infinite; }
+
+/* The body of the orb flows through bright colours while it thinks */
+.orb.think {
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.65), transparent 42%),
+    linear-gradient(90deg, #6c5ce7, #3b82f6, #1fc8b0, #fbbf24, #ff7a59, #d946a8, #6c5ce7);
+  background-size: 100% 100%, 200% 100%;
+  background-repeat: no-repeat, repeat-x;
+  animation: float 4s ease-in-out infinite, orbflow 2.2s linear infinite;
+}
+@keyframes orbflow {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 0 0, calc(var(--s) * -2) 0; }
+}
 
 .eyes { display: flex; gap: calc(var(--s) * 0.13); margin-top: calc(var(--s) * 0.03); }
 
@@ -391,6 +406,7 @@ body.chatting .hero { display: none; }
 .msg { display: flex; align-items: flex-end; gap: 10px; animation: pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .msg.user { justify-content: flex-end; }
 .msg .orb { animation: none; margin: 0 2px 20px 4px; }
+.msg .orb.think { animation: orbflow 2.2s linear infinite; }
 
 @keyframes pop { from { opacity: 0; transform: translateY(12px) scale(0.97); } }
 
@@ -480,12 +496,26 @@ body.chatting .hero { display: none; }
 
 /* ---------- Thinking ---------- */
 .phases { display: flex; flex-direction: column; gap: 8px; min-width: 210px; }
+/* A flowing colour bar under the steps */
+.phases::after {
+  content: "";
+  height: 3px;
+  margin-top: 4px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--a1), var(--a3), #fbbf24, var(--a2), #d946a8, var(--a1));
+  background-size: 200% 100%;
+  animation: flow 1.6s linear infinite;
+}
+@keyframes flow { to { background-position: -200% 0; } }
 
 .ph { display: none; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); animation: pop 0.3s ease; }
 .ph i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
 .ph.done, .ph.active { display: flex; }
 .ph.active { color: var(--ink); }
-.ph.active i { background: var(--a1); animation: pulse 1s infinite; }
+.ph.active i {
+  background: conic-gradient(var(--a1), var(--a3), #fbbf24, var(--a2), #d946a8, var(--a1));
+  animation: spin 0.9s linear infinite;
+}
 .ph.done i { background: var(--green); }
 
 @keyframes pulse {
@@ -611,6 +641,98 @@ body.chatting .hero { display: none; }
 .action-card[data-state="done"] .ac-note { color: var(--green); }
 .action-card[data-state="failed"] { border-color: var(--red); }
 .action-card[data-state="failed"] .ac-note { color: var(--red); }
+
+/* ---------- In-chat password form ---------- */
+.pw-form {
+  --field-bg: #f1eefb;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+  animation: pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+[data-theme="dark"] .pw-form { --field-bg: #24243a; }
+
+.pw-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.pw-form input {
+  width: 100%;
+  padding: 11px 14px 11px 40px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a9aab' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") no-repeat 13px center / 17px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 400;
+  letter-spacing: normal;
+  outline: 0;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.pw-form input:focus { border-color: var(--a1); box-shadow: 0 0 0 4px rgba(108, 92, 231, 0.16); }
+
+/* Browsers paint autofilled fields white or yellow. Keep them in the theme colour. */
+.pw-form input:-webkit-autofill,
+.pw-form input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  caret-color: var(--ink);
+  box-shadow: 0 0 0 100px var(--field-bg) inset;
+  transition: background-color 9999s;
+}
+
+/* Eye button inside each password field: show or hide what you type */
+.pw-field { position: relative; display: block; }
+.pw-field input { padding-right: 46px; }
+/* Edge adds its own reveal icon, which would sit next to ours */
+.pw-field input::-ms-reveal { display: none; }
+
+.pw-eye {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.pw-eye:hover { background: rgba(127, 127, 160, 0.16); color: var(--ink); }
+.pw-eye:focus-visible { outline: 2px solid var(--a1); outline-offset: 1px; }
+.pw-eye .icon { width: 18px; height: 18px; }
+.pw-eye .eye-off { display: none; }
+.pw-eye.on { color: var(--a1); }
+.pw-eye.on .eye-open { display: none; }
+.pw-eye.on .eye-off { display: block; }
+
+.pw-error {
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(229, 72, 77, 0.1);
+  color: var(--red);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.pw-error:empty { display: none; }
+
+.pw-form .ticket-btn { align-self: stretch; justify-content: center; margin-top: 2px; padding: 12px 16px; }
+/* While saving, look busy instead of the green "done" colour */
+.pw-form .ticket-btn:disabled { background: rgba(127, 127, 160, 0.2); color: var(--muted); box-shadow: none; }
 
 /* ---------- Composer ---------- */
 .dock { display: flex; flex-direction: column; gap: 8px; }

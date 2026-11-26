@@ -30,6 +30,10 @@ const ICONS = {
   retry: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   thumb:
     '<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>',
+  // Eye (password hidden) and crossed-out eye (password visible)
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff:
+    '<path d="M17.9 17.9A10.4 10.4 0 0 1 12 19c-6.4 0-10-7-10-7a18 18 0 0 1 4.1-5.1M9.9 5.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a18 18 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/>',
 };
 
 const PHASES = [
@@ -316,6 +320,98 @@ function buildTicketButton(record) {
   return btn;
 }
 
+// ---------- Password form (shown after the user confirms a password change) ----------
+// The passwords go straight to POST /auth/change-password. They never enter the chat, the model,
+// the saved history or the logs.
+
+// One password field with an eye button that shows or hides what is typed
+function passwordField(label, name, autocomplete, minlength) {
+  const min = minlength ? ` minlength="${minlength}"` : "";
+  return `<label>${label}
+      <span class="pw-field">
+        <input type="password" name="${name}" autocomplete="${autocomplete}"${min}
+          autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        <button type="button" class="pw-eye" aria-label="Show password" aria-pressed="false">
+          <span class="eye-open">${icon("eye")}</span><span class="eye-off">${icon("eyeOff")}</span>
+        </button>
+      </span></label>`;
+}
+
+function buildPasswordForm(record, onDone) {
+  const form = document.createElement("form");
+  form.className = "pw-form";
+  form.innerHTML = `
+    ${passwordField("Current password", "current", "current-password")}
+    ${passwordField("New password", "new", "new-password", 8)}
+    ${passwordField("Confirm new password", "confirm", "new-password", 8)}
+    <div class="pw-error" role="alert"></div>
+    <button type="submit" class="ticket-btn">Change password</button>`;
+  const error = form.querySelector(".pw-error");
+  const submit = form.querySelector('button[type="submit"]');
+
+  // Eye buttons: switch the field between dots and plain text
+  form.querySelectorAll(".pw-eye").forEach((eye) => {
+    const input = eye.parentElement.querySelector("input");
+    eye.onclick = () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      eye.classList.toggle("on", show);
+      eye.setAttribute("aria-pressed", show ? "true" : "false");
+      eye.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      input.focus();
+    };
+  });
+
+  // Put every field back to hidden, for example after a successful change
+  const hideAll = () => {
+    form.querySelectorAll(".pw-eye.on").forEach((eye) => eye.click());
+  };
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const current = form.elements["current"].value;
+    const next = form.elements["new"].value;
+    if (next !== form.elements["confirm"].value) {
+      error.textContent = "The new passwords do not match.";
+      return;
+    }
+    error.textContent = "";
+    submit.disabled = true;
+    try {
+      const res = await fetch("/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: current, new_password: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        error.textContent =
+          res.status === 429
+            ? "Too many attempts. Please wait a moment and try again."
+            : typeof data.detail === "string"
+              ? data.detail
+              : "Could not change the password.";
+        submit.disabled = false;
+        return;
+      }
+      hideAll();
+      form.reset();
+      record.action = {
+        state: "done",
+        message: data.message || "Your password was changed.",
+        form: true,
+        formDone: true,
+      };
+      persist();
+      onDone(record.action.state, record.action.message);
+    } catch (err) {
+      error.textContent = "Could not reach the server. Please try again.";
+      submit.disabled = false;
+    }
+  };
+  return form;
+}
+
 // ---------- Proposed action (needs the user's confirmation) ----------
 const ACTION_TITLES = {
   create_ticket: "Create a ticket",
@@ -357,6 +453,12 @@ function buildActionCard(record) {
     card.dataset.state = state;
     row.remove();
     note.textContent = message;
+    const old = card.querySelector(".pw-form");
+    if (old) old.remove();
+    // A confirmed password change shows the form until the password has been changed
+    if (record.action && record.action.form && !record.action.formDone) {
+      card.append(buildPasswordForm(record, showResult));
+    }
   };
 
   card.append(title, body, row, note);
@@ -387,7 +489,11 @@ function buildActionCard(record) {
         // 403, 404, 409 and 410 are final: the proposal cannot be used again
         record.action = { state: "closed", message: data.detail || "This action is no longer available." };
       } else {
-        record.action = { state: data.status, message: data.message };
+        record.action = {
+          state: data.status,
+          message: data.message,
+          form: !!(data.result && data.result.next === "password_form"),
+        };
       }
       persist();
       showResult(record.action.state, record.action.message);

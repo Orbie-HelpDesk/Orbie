@@ -16,6 +16,7 @@ from .auth import (
     STAFF,
     authenticate,
     current_user,
+    find_user_by_email,
     require_admin,
     require_staff,
     safe_next,
@@ -25,7 +26,7 @@ from .config import settings
 from .db import engine
 from .guardrails import check_input, redact_pii
 from .intent import ACTION_INTENTS, OUT_OF_SCOPE, UNKNOWN, classify
-from .passwords import MAX_PASSWORD_LENGTH
+from .passwords import MAX_PASSWORD_LENGTH, check_password_rules, hash_password, verify_password
 from .rag import answer, propose_action
 from .ratelimit import limit_actions, limit_audit, limit_chat, limit_kb, limit_tickets
 from .sessions import COOKIE_NAME, create_token, lifetime_seconds, secret_ok
@@ -284,6 +285,40 @@ def logout(request: Request, response: Response):
 def me(response: Response, user: dict = Depends(current_user)):
     response.headers["Cache-Control"] = "no-store"
     return user
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+@app.post("/auth/change-password", dependencies=[Depends(limit_actions)])
+def change_password(req: ChangePasswordRequest, response: Response, user: dict = Depends(current_user)):
+    """Changes the signed-in user's own password. The current password is required.
+
+    The account is always the signed-in user, never taken from the request. The passwords are
+    not logged and never pass through the chat or the model.
+    """
+    row = find_user_by_email(user["email"])
+    if row is None or not verify_password(req.current_password, row["password_hash"]):
+        raise HTTPException(status_code=400, detail="Your current password is not correct.")
+    problem = check_password_rules(req.new_password)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    if req.new_password == req.current_password:
+        raise HTTPException(status_code=400, detail="Choose a password that is different from the current one.")
+    with engine.begin() as conn:
+        conn.execute(
+            text("update users set password_hash = :h where id = :id"),
+            {"h": hash_password(req.new_password), "id": user["id"]},
+        )
+    try:
+        audit.record(audit.actor_for(user["id"]), "reset_password", {"method": "in_site"})
+    except Exception:
+        # The password is already changed, so the user still gets the result. The failure is logged.
+        logger.exception("Could not write the audit log for a password change")
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "changed", "message": "Your password was changed."}
 
 
 def time_zone(tz: str | None = Query(None, max_length=64)) -> str:
