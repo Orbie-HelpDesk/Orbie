@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
@@ -16,6 +18,7 @@ class Settings(BaseSettings):
     history_turns: int = 4  # earlier exchanges (a question and its answer) sent with a question. 0 turns memory off
     intent_use_model: bool = True  # one small model call when the rules are not sure
     kb_dir: str = "/kb"  # the folder with the markdown articles
+    kb_store: Literal["files", "database"] = "files"  # where the knowledge base page keeps the article text
     kb_max_bytes: int = 60_000  # largest article the knowledge base page accepts
     kb_max_articles: int = 200
     kb_edit_allow_remote: bool = False  # off: the page changes the knowledge base only on a local database

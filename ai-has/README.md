@@ -216,7 +216,24 @@ On the page: a list of articles with status badges, a markdown editor with a byt
 
 **`KB_EDIT_ALLOW_REMOTE` (default `false`).** Saving and deleting change the index tables (`kb_documents` and `kb_chunks`) and the files, so they are refused with a 403 unless the database host is `db` or `localhost`, or `KB_EDIT_ALLOW_REMOTE=true`. Listing, reading and the test box always work. **Only the team lead should switch it on, and only for a shared database such as Supabase.** The reason is that the `kb/` files live in each developer's own checkout while the index is shared: an edit through the page would change the shared index but not anyone else's files, and the next `python -m app.ingest` from another checkout would put the old text back. With the switch off the page shows a read-only banner.
 
-**On Vercel the page is read only.** The deployment has no `/kb` folder, so when `KB_DIR` is left at its default the app reads the copy in `backend/kb/`. Saving and deleting are always refused for that copy, even with `KB_EDIT_ALLOW_REMOTE=true`. The copy does not update itself: after changing an article in `kb/`, copy it to `backend/kb/`, commit, and deploy again.
+**With `KB_STORE=files` (the default), the page is read only on Vercel.** The deployment has no `/kb` folder, so when `KB_DIR` is left at its default the app reads the copy in `backend/kb/`. Saving and deleting are always refused for that copy, even with `KB_EDIT_ALLOW_REMOTE=true`. The copy does not update itself: after changing an article in `kb/`, copy it to `backend/kb/`, commit, and deploy again.
+
+**`KB_STORE`: where the page keeps the article text.** `files` (default) is everything described above. `database` keeps the full text in `kb_documents.content`, so admins can create, update and delete articles on a host where files cannot be changed, such as Vercel. In `database` mode:
+- The page reads and writes only the database. The text, the search index and the audit row change in one transaction, one change at a time.
+- `KB_EDIT_ALLOW_REMOTE=true` is still needed on a shared database. Only admins can change articles, so their passwords must be strong.
+- The `kb/` and `backend/kb/` files are **not** updated. They become older copies. The page does not touch GitHub.
+- An article with index rows but no saved text shows as `text_missing`. Write it again and save, or delete it.
+
+Once any article has saved text, this version of the code protects it: file mode becomes read only for that database, and `python -m app.ingest` refuses to run. `--overwrite-web-edits` overrides the script. It **replaces web edits with the files and brings back deleted articles** that still have a file, so use it only when the team lead has said to. **Older copies of the code have neither protection**, so everyone who uses the shared database must update first.
+
+**Switching a shared database to `database`, in this order** (only after the team lead has said to):
+1. Add the column. It is additive and safe to run again: `alter table kb_documents add column if not exists content text;`
+2. Merge and deploy this code with `KB_STORE` unset. Nothing changes yet.
+3. Save the current article text, with the `kb/` files that match the index: `python -m app.import_articles --allow-remote`. It makes no AI calls, never overwrites saved text, and changes nothing if any article is not indexed or differs from its file.
+4. Set `KB_STORE=database` and `KB_EDIT_ALLOW_REMOTE=true` on the host, then redeploy.
+5. Test with a temporary article: create, update, delete.
+
+Do steps 3 and 4 close together. After step 3 the file mode is read only.
 
 **Rules the server enforces**
 - **File names** are lowercase letters, digits and dashes, ending in `.md` (at most 84 characters), and not a Windows reserved name such as `con` or `nul`. Lowercase only, so two names can never differ just by case on a case-insensitive disk.

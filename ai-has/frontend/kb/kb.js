@@ -138,10 +138,10 @@ async function openArticle(source, force) {
     const data = await api("GET", "/kb/" + encodeURIComponent(source));
     fill(source, data.content, false, listed ? listed.status : "indexed");
   } catch (err) {
-    if (err.status === 404 && listed && listed.status === "file_missing") {
-      // The index has this article but its file is gone. Saving new text creates the file again.
-      fill(source, "# " + (listed.title || "Title") + "\n\n", false, "file_missing");
-      say($("message"), "The file for this article is missing on disk. Write the text again and save to restore it, or delete it.", "error");
+    if (err.status === 404 && listed && (listed.status === "file_missing" || listed.status === "text_missing")) {
+      // The index has this article but its text is gone. Saving new text restores it.
+      fill(source, "# " + (listed.title || "Title") + "\n\n", false, listed.status);
+      say($("message"), "The text of this article is missing. Write it again and save to restore it, or delete it.", "error");
     } else {
       showEditor();
       say($("message"), err.message, "error");

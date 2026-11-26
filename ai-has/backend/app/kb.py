@@ -1,8 +1,10 @@
 """Knowledge base management: list, read, save (and re-index), delete, and test retrieval.
 
-Used by the admin-only routes in main.py. The articles are markdown files in the KB folder
-(settings.kb_dir, /kb in Docker). The index is kb_documents and kb_chunks, filled by the same
-functions as `python -m app.ingest` (ingest.prepare_article and ingest.store_article).
+Used by the admin-only routes in main.py. KB_STORE says where the article text is kept:
+- files (default): markdown files in the KB folder (settings.kb_dir, /kb in Docker).
+- database: kb_documents.content, for hosts where files cannot be changed, such as Vercel.
+The index is kb_documents and kb_chunks in both cases, filled by the same functions as
+`python -m app.ingest` (ingest.prepare_article and ingest.store_article).
 
 Safety rules
 - A name is lowercase letters, digits and dashes plus ".md" (so also no two names that differ only by
@@ -11,17 +13,21 @@ Safety rules
 - An article is at most KB_MAX_BYTES, starts with a "# Title" line, and there are at most KB_MAX_ARTICLES.
 - Changing data is refused unless the database is local (db or localhost) or KB_EDIT_ALLOW_REMOTE is
   true, because the files live in one checkout and the index may be shared.
-- A save embeds first (a failure changes nothing), writes a temp file, commits the database change
-  together with its audit row, and only then moves the file into place.
+- A save embeds first (a failure changes nothing). With files it then writes a temp file, commits the
+  database change together with its audit row, and only then moves the file into place. With the
+  database, the text, the index and the audit row are one transaction.
+- Once the database holds article text, the file mode refuses changes to it, because its files may be older.
 - The audit row has the file name only, never the article text.
 """
 import logging
 import os
 import re
 import secrets
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from . import audit, ingest, rag
 from .config import settings
@@ -87,9 +93,21 @@ REMOTE_MESSAGE = (
 )
 
 
+MANAGED_MESSAGE = (
+    "This database stores the article text, but this app is set to use files, which may be older, "
+    "so the page is read only. Set KB_STORE=database to edit the articles."
+)
+NO_COLUMN_MESSAGE = "The database is not ready for KB_STORE=database. Add the content column (see the README)."
+
+
+def uses_database() -> bool:
+    return settings.kb_store == "database"
+
+
 def read_only_reason() -> str | None:
-    """Why changes are refused, or None when they are allowed."""
-    if ingest.is_bundled_kb():  # first, because KB_EDIT_ALLOW_REMOTE cannot make this copy writable
+    """Why the settings refuse changes, or None when they allow them. Does not look at the database."""
+    # The bundled copy comes first, because KB_EDIT_ALLOW_REMOTE cannot make it writable
+    if not uses_database() and ingest.is_bundled_kb():
         return BUNDLED_MESSAGE
     if settings.kb_edit_allow_remote or is_local_db(settings.database_url):
         return None
@@ -97,10 +115,15 @@ def read_only_reason() -> str | None:
 
 
 def require_editable() -> None:
-    """Changes need the real KB folder, and a local database unless KB_EDIT_ALLOW_REMOTE is switched on."""
+    """Changes need a local database unless KB_EDIT_ALLOW_REMOTE is switched on. With files they also
+    need the real KB folder, and a database that does not already store the article text."""
     reason = read_only_reason()
     if reason:
         raise KbError(403, reason)
+    if not uses_database():
+        with engine.connect() as conn:
+            if ingest.has_database_articles(conn):
+                raise KbError(403, MANAGED_MESSAGE)
 
 
 def normalize_content(content: str) -> str:
@@ -126,6 +149,13 @@ def _article_files() -> list[Path]:
 def info() -> dict:
     """What the page needs to know: the limits, and whether changes are allowed."""
     reason = read_only_reason()
+    if reason is None and not uses_database():
+        try:
+            with engine.connect() as conn:
+                if ingest.has_database_articles(conn):
+                    reason = MANAGED_MESSAGE
+        except Exception:  # only the banner depends on this: save and delete check again
+            logger.warning("Could not check whether the database stores the article text")
     return {
         "max_bytes": settings.kb_max_bytes,
         "max_articles": settings.kb_max_articles,
@@ -137,8 +167,39 @@ def info() -> dict:
 
 
 # ---------- reading ----------
+@contextmanager
+def _needs_content_column():
+    """Gives a clear message when the database does not have the content column yet."""
+    try:
+        yield
+    except ProgrammingError as err:
+        if getattr(err.orig, "pgcode", None) == "42703":  # undefined column
+            raise KbError(503, NO_COLUMN_MESSAGE) from None
+        raise
+
+
+def _list_from_database() -> list[dict]:
+    with _needs_content_column(), engine.connect() as conn:
+        rows = conn.execute(text(
+            "select source_path, title, chunk_count, indexed_at, octet_length(content) as size "
+            "from kb_documents order by source_path, id"
+        )).mappings().all()
+    items = {
+        r["source_path"]: {
+            "source": r["source_path"], "title": r["title"], "chunks": r["chunk_count"],
+            "indexed_at": as_utc(r["indexed_at"]), "size": r["size"],
+            "status": "indexed" if r["size"] is not None else "text_missing",
+        }
+        for r in rows
+    }
+    return [items[source] for source in sorted(items)]
+
+
 def list_articles() -> list[dict]:
-    """Every article on disk and in the index, with a status: indexed, not_indexed or file_missing."""
+    """Every article with a status. Database: indexed, or text_missing (index rows with no saved text).
+    Files: every article on disk and in the index, as indexed, not_indexed or file_missing."""
+    if uses_database():
+        return _list_from_database()
     with engine.connect() as conn:
         rows = conn.execute(text("select source_path, title, chunk_count, indexed_at from kb_documents")).mappings().all()
     indexed = {r["source_path"]: r for r in rows}
@@ -165,17 +226,79 @@ def list_articles() -> list[dict]:
     return sorted(items, key=lambda i: i["source"])
 
 
+def _text_from_database(source: str) -> str | None:
+    with _needs_content_column(), engine.connect() as conn:
+        row = conn.execute(
+            text("select content from kb_documents where source_path = :p order by id desc limit 1"), {"p": source}
+        ).mappings().first()
+    return row["content"] if row else None
+
+
 def read_article(source: str) -> dict:
-    path = path_for(source)
-    if not path.is_file():
+    if uses_database():
+        content = _text_from_database(check_name(source))
+    else:
+        path = path_for(source)
+        content = path.read_text(encoding="utf-8") if path.is_file() else None
+    if content is None:
         raise KbError(404, "Article not found.")
-    content = path.read_text(encoding="utf-8")
-    return {"source": source, "content": content, "size": len(content.encode("utf-8")), "title": ingest.title_of(content, path.stem)}
+    title = ingest.title_of(content, Path(source).stem)
+    return {"source": source, "content": content, "size": len(content.encode("utf-8")), "title": title}
 
 
 # ---------- changing ----------
+def _saved(source: str, prepared: ingest.Prepared, cleaned: str, existed: bool) -> dict:
+    return {
+        "source": source, "title": prepared.title, "chunks": len(prepared.chunks),
+        "size": len(cleaned.encode("utf-8")), "created": not existed,
+    }
+
+
+def _lock_articles(conn) -> None:
+    """One change at a time until the transaction ends, so two saves cannot leave two copies of an article."""
+    conn.execute(text("select pg_advisory_xact_lock(hashtext('kb_articles'))"))
+
+
+def _check_room(conn, source: str) -> bool:
+    """Whether the article is already stored. A new one is refused when the knowledge base is full."""
+    rows = conn.execute(text("select source_path from kb_documents")).mappings().all()
+    names = {r["source_path"] for r in rows}
+    if source not in names and len(names) >= settings.kb_max_articles:
+        raise KbError(409, f"The knowledge base already has {settings.kb_max_articles} articles.")
+    return source in names
+
+
+def _save_to_database(source: str, content: str, actor: str) -> dict:
+    cleaned = normalize_content(content)
+    with _needs_content_column(), engine.connect() as conn:
+        _check_room(conn, source)  # before paying for the embedding
+        conn.execute(text("select content from kb_documents limit 0"))
+
+    prepared = ingest.prepare_article(source, cleaned)  # embeds first: if this fails nothing has changed
+
+    with _needs_content_column(), engine.begin() as conn:
+        _lock_articles(conn)
+        existed = _check_room(conn, source)
+        ingest.store_article(conn, prepared, content=cleaned)
+        audit.record(actor, "kb_update" if existed else "kb_create", {"file": source}, conn=conn)
+    return _saved(source, prepared, cleaned, existed)
+
+
+def _delete_from_database(source: str, actor: str) -> dict:
+    with engine.begin() as conn:
+        _lock_articles(conn)
+        if not ingest.remove_article(conn, source):  # the text is in the same row as the index
+            raise KbError(404, "Article not found.")
+        audit.record(actor, "kb_delete", {"file": source}, conn=conn)
+    return {"source": source, "deleted": True}
+
+
 def save_article(source: str, content: str, actor: str) -> dict:
     """Creates or updates an article and re-indexes only it. Raises KbError, or the provider error if embedding fails."""
+    if uses_database():
+        check_name(source)
+        require_editable()
+        return _save_to_database(source, content, actor)
     path = path_for(source)
     require_editable()
     cleaned = normalize_content(content)
@@ -201,14 +324,15 @@ def save_article(source: str, content: str, actor: str) -> dict:
         temp.unlink(missing_ok=True)
         logger.exception("The index for %s was saved but the file could not be written", source)
         raise KbError(500, "The article was indexed but its file could not be written. Save it again.") from None
-    return {
-        "source": source, "title": prepared.title, "chunks": len(prepared.chunks),
-        "size": len(cleaned.encode("utf-8")), "created": not existed,
-    }
+    return _saved(source, prepared, cleaned, existed)
 
 
 def delete_article(source: str, actor: str) -> dict:
-    """Removes the article's index rows and its file. 404 if neither exists."""
+    """Removes the article's index rows, and its file when files are used. 404 if there is nothing to remove."""
+    if uses_database():
+        check_name(source)
+        require_editable()
+        return _delete_from_database(source, actor)
     path = path_for(source)
     require_editable()
     has_file = path.is_file()

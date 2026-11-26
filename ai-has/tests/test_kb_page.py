@@ -104,6 +104,7 @@ def test_the_page_script_never_builds_html_from_article_text():
 @pytest.fixture
 def info_client(monkeypatch, tmp_path, login_as):
     monkeypatch.setattr(settings, "kb_dir", str(tmp_path))  # a real KB folder, as in Docker
+    monkeypatch.setattr(kb, "engine", FakeKbDb())
     monkeypatch.setattr(settings, "rate_limit_enabled", False)
     return TestClient(main.app), login_as
 
