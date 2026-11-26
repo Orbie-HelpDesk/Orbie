@@ -79,6 +79,7 @@ class KBDocument(Base):
     title: Mapped[str] = mapped_column(String(200))
     source_path: Mapped[str] = mapped_column(String(300))
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)  # the article, when KB_STORE=database
     indexed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

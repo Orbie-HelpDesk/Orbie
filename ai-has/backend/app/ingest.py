@@ -6,6 +6,7 @@ The functions here are shared with the knowledge base page (kb.py), so the scrip
 index an article in exactly the same way.
 """
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,15 +105,18 @@ def remove_article(conn, source: str) -> int:
     return conn.execute(text("delete from kb_documents where source_path = :p"), {"p": source}).rowcount
 
 
-def store_article(conn, prepared: Prepared) -> int:
-    """Stores a prepared article in an open transaction. An older version of it is replaced. Returns the document id."""
+def store_article(conn, prepared: Prepared, content: str | None = None) -> int:
+    """Stores a prepared article in an open transaction. An older version of it is replaced. Returns the document id.
+
+    The full text is saved only when it is given. Without it, the content column is not needed.
+    """
     remove_article(conn, prepared.source)
+    columns, values = "title, source_path, chunk_count", ":t, :p, :c"
+    row = {"t": prepared.title, "p": prepared.source, "c": len(prepared.chunks)}
+    if content is not None:
+        columns, values, row["x"] = columns + ", content", values + ", :x", content
     doc_id = conn.execute(
-        text(
-            "insert into kb_documents (title, source_path, chunk_count) "
-            "values (:t, :p, :c) returning id"
-        ),
-        {"t": prepared.title, "p": prepared.source, "c": len(prepared.chunks)},
+        text(f"insert into kb_documents ({columns}) values ({values}) returning id"), row
     ).scalar_one()
 
     for i, (chunk, vec) in enumerate(zip(prepared.chunks, prepared.vectors)):
@@ -132,19 +136,43 @@ def store_article(conn, prepared: Prepared) -> int:
     return doc_id
 
 
-def ingest():
+OVERWRITE_FLAG = "--overwrite-web-edits"
+
+
+def has_database_articles(conn) -> bool:
+    """True when the database holds article text, so the database and not the files has the latest articles.
+
+    Written with to_jsonb so that it also works on a database that does not have the content column yet.
+    """
+    return bool(
+        conn.execute(
+            text("select exists (select 1 from kb_documents d where to_jsonb(d) ->> 'content' is not null)")
+        ).scalar()
+    )
+
+
+def ingest(overwrite: bool = False):
     files = sorted(kb_dir().glob("*.md"))
     if not files:
         print(f"No .md files found in {kb_dir()}")
         return
 
     with engine.begin() as conn:
+        managed = has_database_articles(conn)  # checked before any embedding call
+        if managed and not overwrite:
+            raise SystemExit(
+                "Refusing to index: this database stores the article text, so the files here may be older. "
+                "Indexing could undo changes made on the knowledge base page and bring back deleted articles. "
+                f"Pass {OVERWRITE_FLAG} only if the files really should replace them."
+            )
         for f in files:
-            prepared = prepare_article(f.name, f.read_text(encoding="utf-8"))
-            store_article(conn, prepared)  # re-ingesting the same file replaces the old version
+            content = f.read_text(encoding="utf-8")
+            prepared = prepare_article(f.name, content)
+            # re-ingesting the same file replaces the old version
+            store_article(conn, prepared, content=content if managed else None)
             print(f"Indexed {f.name}: {len(prepared.chunks)} chunks")
 
 
 if __name__ == "__main__":
     require_local_db(settings.database_url)
-    ingest()
+    ingest(overwrite=OVERWRITE_FLAG in sys.argv[1:])

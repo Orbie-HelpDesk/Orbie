@@ -49,6 +49,7 @@
 .tag.indexed { background: rgba(47, 184, 111, 0.16); color: var(--green); }
 .tag.not_indexed { background: rgba(255, 122, 89, 0.16); color: var(--a2); }
 .tag.file_missing { background: rgba(229, 72, 77, 0.16); color: var(--red); }
+.tag.text_missing { background: rgba(229, 72, 77, 0.16); color: var(--red); }
 .tag.new { background: rgba(108, 92, 231, 0.16); color: var(--a1); }
 
 /* ---------- Editor ---------- */
@@ -103,6 +104,7 @@
 .kb-delete.solid { background: var(--red); color: #fff; }
 .kb-delete.solid:hover:not(:disabled) { background: var(--red); filter: brightness(1.08); }
 .kb-delete:disabled { opacity: 0.5; cursor: default; }
+#newBtn:disabled { opacity: 0.45; cursor: default; transform: none; }
 
 .kb-confirm {
   margin-top: 14px;

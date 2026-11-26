@@ -61,6 +61,10 @@ create table if not exists kb_documents (
     indexed_at timestamp not null default now()
 );
 
+-- The full article text, used when KB_STORE=database. Additive: existing rows keep working with no text.
+-- Fill it for the current articles with python -m app.import_articles.
+alter table kb_documents add column if not exists content text;
+
 -- Not in models.py: ingest.py and rag.py use it through raw SQL.
 create table if not exists kb_chunks (
     id serial primary key,
