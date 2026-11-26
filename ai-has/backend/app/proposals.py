@@ -58,7 +58,7 @@ def clean_arguments(name: str, arguments: dict | None) -> dict | None:
 def _label(name: str, arguments: dict) -> str:
     if name == CREATE_TICKET:
         return f"Create a {arguments['priority']} priority ticket: {arguments['summary']}"
-    return "Send a password reset link to your account"
+    return "Change your password on this website"
 
 
 def attach_conversation(action_id: str, conversation_id: int) -> None:
@@ -152,11 +152,12 @@ def _run(name: str, arguments: dict, user: dict, conversation_id: int | None = N
         audit = {"ticket_id": result["id"], "priority": result["priority"], "jira_sync": result["jira_sync"]}
         return {"message": message, "result": shown, "audit": audit}
     if name == PASSWORD_RESET:
-        result = actions.request_password_reset(user["email"])
+        # The password is changed on the website itself (POST /auth/change-password). It never goes
+        # through the chat text or the model. Confirming only opens the form.
         return {
-            "message": "A password reset link was sent to your account. Check your inbox and follow the steps.",
-            "result": result,
-            "audit": {"status": result["status"]},
+            "message": "Confirmed. Enter your current password and a new one below.",
+            "result": {"next": "password_form"},
+            "audit": {"status": "form_opened"},
         }
     raise ProposalError(400, "Unknown action.")
 
