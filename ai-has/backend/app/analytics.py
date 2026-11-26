@@ -49,10 +49,16 @@ TOTALS_SQL = text(
     """
 )
 
+# citations is jsonb on Postgres (Supabase). jsonb_array_elements_text needs jsonb, and the cast
+# also works if the column is plain json. The case turns a JSON null or any non-array into [].
 ARTICLES_SQL = text(
     f"""
     select a.source, count(*) as n
-    from messages m, json_array_elements_text(m.citations) as a(source)
+    from messages m,
+         jsonb_array_elements_text(
+             case when jsonb_typeof(m.citations::jsonb) = 'array'
+                  then m.citations::jsonb else '[]'::jsonb end
+         ) as a(source)
     where m.role = 'assistant' and m.citations is not null and m.created_at >= {SINCE}
     group by a.source order by n desc, a.source limit {TOP_N}
     """
