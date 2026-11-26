@@ -112,7 +112,20 @@ class NoCacheStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 
-FRONTEND_DIR = Path("/frontend")
+def _find_frontend() -> Path:
+    """Where the web pages are: Docker mounts them at /frontend, Vercel uploads a copy in backend/."""
+    here = Path(__file__).resolve().parent  # .../backend/app
+    for candidate in (
+        Path("/frontend"),                  # Docker (mounted folder)
+        here.parent / "frontend",           # backend/frontend (the Vercel upload)
+        here.parent.parent / "frontend",    # ai-has/frontend (running without Docker)
+    ):
+        if candidate.is_dir():
+            return candidate
+    return Path("/frontend")
+
+
+FRONTEND_DIR = _find_frontend()
 CHAT_DIR = FRONTEND_DIR / "chat"
 ADMIN_DIR = FRONTEND_DIR / "admin"
 KB_PAGE_DIR = FRONTEND_DIR / "kb"
