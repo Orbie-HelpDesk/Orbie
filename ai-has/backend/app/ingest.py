@@ -28,9 +28,25 @@ client = OpenAI(
 EMBED_BATCH = 50  # texts per embedding call, so one big article stays under the provider's batch limit
 
 
+DEFAULT_KB_DIR = "/kb"  # where Docker mounts the articles
+BUNDLED_KB_DIR = Path(__file__).resolve().parent.parent / "kb"  # backend/kb (the Vercel upload)
+
+
 def kb_dir() -> Path:
-    """The folder with the markdown articles. Read at call time, so tests can point it elsewhere."""
-    return Path(settings.kb_dir)
+    """The folder with the markdown articles. Read at call time, so tests can point it elsewhere.
+
+    If KB_DIR is left at its default and that folder does not exist, the uploaded copy is used.
+    A KB_DIR that was set to something else is never replaced, so a wrong value still shows an error.
+    """
+    configured = Path(settings.kb_dir)
+    if settings.kb_dir == DEFAULT_KB_DIR and not configured.is_dir() and BUNDLED_KB_DIR.is_dir():
+        return BUNDLED_KB_DIR
+    return configured
+
+
+def is_bundled_kb() -> bool:
+    """True when the articles come from the uploaded copy, which must not be changed."""
+    return kb_dir().resolve() == BUNDLED_KB_DIR.resolve()
 
 
 def chunk_text(content: str, max_chars: int = 800) -> list[str]:

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -465,3 +466,48 @@ def test_a_symlink_is_refused_even_where_symlinks_cannot_be_created(env):
         assert res.status_code == 400
     assert env.db.docs == {} and env.embedder.calls == []
     assert env.client.get("/kb").json() == []  # not listed either
+
+
+# ---------- the uploaded copy (Vercel has no /kb folder) ----------
+def use_uploaded_copy(env):
+    """KB_DIR at its default, no such folder, and the temporary folder standing in for backend/kb."""
+    (env.folder / "vpn.md").write_text(ARTICLE, encoding="utf-8")
+    env.mp.setattr(ingest, "DEFAULT_KB_DIR", str(env.folder / "not-mounted"))
+    env.mp.setattr(ingest, "BUNDLED_KB_DIR", env.folder)
+    env.mp.setattr(settings, "kb_dir", str(env.folder / "not-mounted"))
+
+
+def test_without_a_kb_folder_the_uploaded_copy_is_listed_and_read(env):
+    use_uploaded_copy(env)
+    assert [a["source"] for a in env.client.get("/kb").json()] == ["vpn.md"]
+    assert env.client.get("/kb/vpn.md").json()["content"] == ARTICLE
+
+
+@pytest.mark.parametrize("allow_remote", [False, True])
+def test_the_uploaded_copy_can_never_be_changed(env, allow_remote):
+    use_uploaded_copy(env)
+    env.mp.setattr(settings, "kb_edit_allow_remote", allow_remote)
+    env.mp.setattr(settings, "database_url", "postgresql+psycopg2://u:p@localhost:5433/x")
+    info = env.client.get("/kb/info").json()
+    assert info["editable"] is False and info["read_only_reason"] == kb.BUNDLED_MESSAGE
+    assert put(env, "vpn.md", "# New\n\nText.\n").status_code == 403
+    assert put(env, "wifi.md").status_code == 403
+    assert env.client.request("DELETE", "/kb/vpn.md", json={}).status_code == 403
+    assert files(env) == ["vpn.md"]
+    assert (env.folder / "vpn.md").read_text(encoding="utf-8") == ARTICLE
+    assert env.embedder.calls == []
+
+
+def test_the_default_kb_folder_wins_over_the_uploaded_copy(env, tmp_path):
+    env.mp.setattr(ingest, "DEFAULT_KB_DIR", str(env.folder))
+    env.mp.setattr(ingest, "BUNDLED_KB_DIR", tmp_path)
+    assert ingest.kb_dir() == env.folder and not ingest.is_bundled_kb()
+
+
+def test_the_uploaded_copy_matches_the_kb_folder():
+    root = Path(__file__).resolve().parents[1]
+    originals, copies = (
+        {p.name: p.read_text(encoding="utf-8") for p in folder.glob("*.md")}
+        for folder in (root / "kb", root / "backend" / "kb")
+    )
+    assert originals and copies == originals
